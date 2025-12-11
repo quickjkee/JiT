@@ -221,8 +221,12 @@ def compute_statistics_of_path(path, model, batch_size, dims, device, num_worker
             m, s = f['mu'][:], f['sigma'][:]
     else:
         path = pathlib.Path(path)
-        files = sorted([file for ext in IMAGE_EXTENSIONS
-                       for file in path.glob('*.{}'.format(ext))])
+        file_paths = sorted(
+           [file for ext in IMAGE_EXTENSIONS for file in path.glob('*.{}'.format(ext))]
+        )
+
+        files = [Image.open(f).convert('RGB') for f in file_paths]
+
         m, s = calculate_activation_statistics(files, model, batch_size,
                                                dims, device, num_workers)
 
