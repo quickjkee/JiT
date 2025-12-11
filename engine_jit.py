@@ -9,8 +9,9 @@ import cv2
 
 import util.misc as misc
 import util.lr_sched as lr_sched
-import torch_fidelity_own as torch_fidelity
 import copy
+
+from util.fid import calculate_fid
 
 
 def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
@@ -138,23 +139,10 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
             fid_statistics_file = 'fid_stats/jit_in512_stats.npz'
         else:
             raise NotImplementedError
-        metrics_dict = torch_fidelity.calculate_metrics(
-            input1=save_folder,
-            input2=None,
-            fid_statistics_file=fid_statistics_file,
-            cuda=True,
-            isc=True,
-            fid=True,
-            kid=False,
-            prc=False,
-            verbose=False,
-        )
-        fid = metrics_dict['frechet_inception_distance']
-        inception_score = metrics_dict['inception_score_mean']
+        fid = calculate_fid(save_folder, fid_statistics_file, inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth')
         postfix = "_cfg{}_res{}".format(model_without_ddp.cfg_scale, args.img_size)
         log_writer.add_scalar('fid{}'.format(postfix), fid, epoch)
-        log_writer.add_scalar('is{}'.format(postfix), inception_score, epoch)
-        print("FID: {:.4f}, Inception Score: {:.4f}".format(fid, inception_score))
+        print("FID: {:.4f}".format(fid))
         shutil.rmtree(save_folder)
 
     torch.distributed.barrier()
