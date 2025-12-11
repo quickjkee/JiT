@@ -9,7 +9,7 @@ import cv2
 
 import util.misc as misc
 import util.lr_sched as lr_sched
-import torch_fidelity
+import torch_fidelity_own as torch_fidelity
 import copy
 
 
