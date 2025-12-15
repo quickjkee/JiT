@@ -15,9 +15,13 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 
+from torchvision.transforms import Normalize
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from util.model_util import RMSNorm
+import torch.nn.functional as F
 
 logger = logging.getLogger("dinov2")
+
 
 
 
@@ -165,6 +169,7 @@ class DinoJiT(nn.Module):
         self.num_classes = num_classes
         self.patch_size = patch_size
         self.out_channels = 3
+        self.norm_init = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
@@ -193,6 +198,12 @@ class DinoJiT(nn.Module):
         t: (N,)
         y: (N,)
         """
+
+        x = F.interpolate(
+            x, size=(224, 224), mode="bicubic", align_corners=False
+        ).squeeze(0)                                                 # [3,224,224]
+        x = self.norm_init(x)                                       # DINO-style normalize
+
         # class and time embeddings
         if t is not None and y is not None:
             t_emb = self.t_embedder(t)

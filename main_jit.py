@@ -137,15 +137,7 @@ def main(args):
         log_writer = None
 
     # Data augmentation transforms
-    if 'Dino' in args.model: 
-        transform_train = transforms.Compose([ 
-                transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
-                transforms.RandomHorizontalFlip(), 
-                transforms.PILToTensor(),
-                transforms.Lambda(lambda img: crop_dinov2(img, args.img_size)), 
-            ])
-    else:
-        transform_train = transforms.Compose([
+    transform_train = transforms.Compose([
                           transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
                           transforms.RandomHorizontalFlip(),
                           transforms.PILToTensor()

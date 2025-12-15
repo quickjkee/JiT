@@ -14,40 +14,15 @@ import copy
 from util.fid import calculate_fid
 
 
-def to_minus1_1(x: torch.Tensor) -> torch.Tensor:
-    x = x.to(torch.float32)
-    if x.max() > 1.5:  # likely uint8 [0..255]
-        x = x / 255.0
-    return x * 2.0 - 1.0
-
 
 def unpack_batch(batch, device, case='JiT'):
-    # DINO case: ((x_in, x_out), y)
-    if len(batch) == 2 and isinstance(batch[0], (tuple, list)) and len(batch[0]) == 2:
-        (x_in, x_out), y = batch
-        x_in  = x_in.to(device, non_blocking=True)                 # DINO input (no [-1,1])
-        x_out = to_minus1_1(x_out.to(device, non_blocking=True))   # diffusion target
-        y     = y.to(device, non_blocking=True).long()
-        return x_in, x_out, y
-
-    # DINO case: (x_in, x_out, y)
-    if len(batch) == 3:
-        x_in, x_out, y = batch
-        x_in  = x_in.to(device, non_blocking=True)                 # DINO input
-        x_out = to_minus1_1(x_out.to(device, non_blocking=True))   # diffusion target
-        y     = y.to(device, non_blocking=True).long()
-        return x_in, x_out, y
-
-    # Non-DINO case: (x, y) -> normalize and use as both input and target
-    if len(batch) == 2:
-        x, y = batch
-        if 'Dino' not in case:
-            x = to_minus1_1(x.to(device, non_blocking=True))
-        y = y.to(device, non_blocking=True).long()
-        return x, x, y
-
-    raise ValueError(f"Unexpected batch format: {type(batch)} len={len(batch)}")
-
+    x, y = batch
+    x.to(torch.float32)
+    x = x / 255. 
+    if 'Dino' not in case:
+        x = x * 2.0 - 1.0
+    y = y.to(device, non_blocking=True).long()
+    return x, y
 
 
 def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
