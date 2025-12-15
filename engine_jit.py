@@ -21,10 +21,7 @@ def unpack_batch(batch, device, case='JiT'):
     x, y = batch
     x.to(torch.float32)
     x = x / 255. 
-    if 'Dino' not in case:
-        x = x * 2.0 - 1.0
-    else:
-        x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)  
+    x = x * 2.0 - 1.0
     y = y.to(device, non_blocking=True).long()
     return x, y
 
@@ -49,7 +46,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(x, labels)
+            loss = model(Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x), labels)
 
         loss_value = loss.item()
         if not math.isfinite(loss_value):
