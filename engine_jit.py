@@ -46,7 +46,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)((x + 1) / 2), 
+            loss = model(x, 
                          labels)
 
         loss_value = loss.item()
