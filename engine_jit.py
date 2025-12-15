@@ -12,6 +12,8 @@ import util.lr_sched as lr_sched
 import copy
 
 from util.fid import calculate_fid
+from torchvision.transforms import Normalize
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 
@@ -21,6 +23,8 @@ def unpack_batch(batch, device, case='JiT'):
     x = x / 255. 
     if 'Dino' not in case:
         x = x * 2.0 - 1.0
+    else:
+        x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)  
     y = y.to(device, non_blocking=True).long()
     return x, y
 

@@ -201,8 +201,7 @@ class DinoJiT(nn.Module):
 
         x = F.interpolate(
             x, size=(224, 224), mode="bicubic", align_corners=False
-        ).squeeze(0)                                                 # [3,224,224]
-        x = self.norm_init(x)                                       # DINO-style normalize
+        )
 
         # class and time embeddings
         if t is not None and y is not None:
