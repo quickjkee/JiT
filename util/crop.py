@@ -45,6 +45,13 @@ class TwoResWrapper(torch.utils.data.Dataset):
         return x224, x256, y
 
 
+def crop_dinov2(x, resolution): 
+    x = x / 255. 
+    x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x) 
+    x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic') 
+    return x
+
+
 def center_crop_arr(pil_image, image_size):
     """
     Center cropping implementation from ADM.
