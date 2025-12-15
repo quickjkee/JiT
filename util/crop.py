@@ -48,7 +48,9 @@ class TwoResWrapper(torch.utils.data.Dataset):
 def crop_dinov2(x, resolution): 
     x = x / 255. 
     x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x) 
-    x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic') 
+    x = F.interpolate(
+            x.unsqueeze(0), size=(224, 224), mode="bicubic", align_corners=False
+        ).squeeze(0)  
     return x
 
 
