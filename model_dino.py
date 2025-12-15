@@ -87,29 +87,41 @@ class LabelEmbedder(nn.Module):
 class BlockWithAdaLN(nn.Module):
     def __init__(self, blk, dim, cond_dim):
         super().__init__()
-        # keep pretrained modules/weights
         self.norm1 = blk.norm1
         self.attn  = blk.attn
         self.norm2 = blk.norm2
         self.mlp   = blk.mlp
         self.drop_path = getattr(blk, "drop_path", nn.Identity())
 
+        self.ls1 = getattr(blk, "ls1", nn.Identity())
+        self.ls2 = getattr(blk, "ls2", nn.Identity())
+
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(cond_dim, 6 * cond_dim, bias=True)
+            nn.Linear(cond_dim, 6 * dim, bias=True)
         )
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
     def forward(self, x, c=None):
-        if c is not None:
-            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-            x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-            x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        B, N, D = x.shape
+
+        if c is None:
+            zeros = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+            ones  = torch.ones(B, D, device=x.device, dtype=x.dtype)
+            shift_msa = zeros; scale_msa = zeros; gate_msa = ones
+            shift_mlp = zeros; scale_mlp = zeros; gate_mlp = ones
         else:
-            x = x + self.attn(self.norm1(x))
-            x = x + self.mlp(self.norm2(x))
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
+                self.adaLN_modulation(c).chunk(6, dim=-1)
+
+        attn_out = self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        mlp_out  = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+
+        x = x + self.drop_path(self.ls1(gate_msa.unsqueeze(1) * attn_out))
+        x = x + self.drop_path(self.ls2(gate_mlp.unsqueeze(1) * mlp_out))
         return x
+
 
 
 class FinalLayer(nn.Module):
@@ -158,7 +170,7 @@ class DinoJiT(nn.Module):
         self.t_embedder = TimestepEmbedder(self.hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, self.hidden_size)
         self.dino_model.blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
-        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
+        self.final_layer = FinalLayer(self.hidden_size, patch_size, self.out_channels)
 
 
     def unpatchify(self, x, p):
@@ -197,6 +209,7 @@ class DinoJiT(nn.Module):
         x = self.dino_model.norm(x)[:, self.dino_model.num_register_tokens + 1 :]
 
         if t is not None and y is not None:
+            x = self.final_layer(x, c)
             output = self.unpatchify(x, self.patch_size)
         else:
             output = x
