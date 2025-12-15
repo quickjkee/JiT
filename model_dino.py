@@ -17,6 +17,8 @@ import torch.utils.checkpoint
 
 from util.model_util import RMSNorm
 import torch.nn.functional as F
+from torchvision.transforms import Normalize
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 logger = logging.getLogger("dinov2")
 
@@ -199,6 +201,9 @@ class DinoJiT(nn.Module):
         x = F.interpolate(
             x, size=(224, 224), mode="bicubic", align_corners=False
         )
+        x = x.clamp(-1, 1)          # or torch.tanh(z224)
+        x = (x + 1) * 0.5           # -> [0,1]
+        x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
 
         # class and time embeddings
         if t is not None and y is not None:

@@ -12,8 +12,6 @@ import util.lr_sched as lr_sched
 import copy
 
 from util.fid import calculate_fid
-from torchvision.transforms import Normalize
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 
@@ -46,7 +44,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x), labels)
+            loss = model(x, labels)
 
         loss_value = loss.item()
         if not math.isfinite(loss_value):
