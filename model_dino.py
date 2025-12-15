@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
+import os, torch, torch.distributed as dist
 
 from util.model_util import RMSNorm
 import torch.nn.functional as F
@@ -230,7 +231,13 @@ class DinoJiT(nn.Module):
 
 
 def DinoJiT_B_16(**kwargs):
-    dinov2_vitb14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
+    dinov2_vitb14 = torch.hub.load(
+                                    "facebookresearch/dinov2:main",
+                                    "dinov2_vitb14",
+                                    source="github",
+                                    force_reload=True,
+                                    trust_repo=True,
+                                )
     return DinoJiT(dino_model=dinov2_vitb14, patch_size=16, **kwargs)
 
 

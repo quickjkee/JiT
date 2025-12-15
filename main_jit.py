@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
-from util.crop import center_crop_arr, crop_dinov2, load_ds_train
+from util.crop import center_crop_arr
 import util.misc as misc
 
 import copy
