@@ -14,6 +14,42 @@ import copy
 from util.fid import calculate_fid
 
 
+def to_minus1_1(x: torch.Tensor) -> torch.Tensor:
+    x = x.to(torch.float32)
+    if x.max() > 1.5:  # likely uint8 [0..255]
+        x = x / 255.0
+    return x * 2.0 - 1.0
+
+
+def unpack_batch(batch, device, case='JiT'):
+    # DINO case: ((x_in, x_out), y)
+    if len(batch) == 2 and isinstance(batch[0], (tuple, list)) and len(batch[0]) == 2:
+        (x_in, x_out), y = batch
+        x_in  = x_in.to(device, non_blocking=True)                 # DINO input (no [-1,1])
+        x_out = to_minus1_1(x_out.to(device, non_blocking=True))   # diffusion target
+        y     = y.to(device, non_blocking=True).long()
+        return x_in, x_out, y
+
+    # DINO case: (x_in, x_out, y)
+    if len(batch) == 3:
+        x_in, x_out, y = batch
+        x_in  = x_in.to(device, non_blocking=True)                 # DINO input
+        x_out = to_minus1_1(x_out.to(device, non_blocking=True))   # diffusion target
+        y     = y.to(device, non_blocking=True).long()
+        return x_in, x_out, y
+
+    # Non-DINO case: (x, y) -> normalize and use as both input and target
+    if len(batch) == 2:
+        x, y = batch
+        if 'Dino' not in case:
+            x = to_minus1_1(x.to(device, non_blocking=True))
+        y = y.to(device, non_blocking=True).long()
+        return x, x, y
+
+    raise ValueError(f"Unexpected batch format: {type(batch)} len={len(batch)}")
+
+
+
 def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
@@ -26,13 +62,11 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
 
-    for data_iter_step, (x, labels) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+    for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         # per iteration (instead of per epoch) lr scheduler
         lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
-        # normalize image to [-1, 1]
-        x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
-        x = x * 2.0 - 1.0
+        x, labels = unpack_batch(batch, device, case=args.model)
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):

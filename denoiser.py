@@ -1,6 +1,30 @@
 import torch
 import torch.nn as nn
 from model_jit import JiT_models
+from model_dino import DinoJiT_models
+
+
+def print_trainable(model):
+    total = 0
+    trainable = 0
+
+    for name, p in model.named_parameters():
+        n = p.numel()
+        total += n
+        if p.requires_grad:
+            trainable += n
+            status = "TRAIN"
+        else:
+            status = "FROZEN"
+
+        print(f"{status:6} | {name:60} | {n:>10}")
+
+    frozen = total - trainable
+    print("-" * 90)
+    print(f"Trainable params: {trainable:,}")
+    print(f"Frozen params:    {frozen:,}")
+    print(f"Total params:     {total:,}")
+    print(f"Trainable ratio:  {100 * trainable / total:.2f}%")
 
 
 class Denoiser(nn.Module):
@@ -9,13 +33,22 @@ class Denoiser(nn.Module):
         args
     ):
         super().__init__()
-        self.net = JiT_models[args.model](
-            input_size=args.img_size,
-            in_channels=3,
-            num_classes=args.class_num,
-            attn_drop=args.attn_dropout,
-            proj_drop=args.proj_dropout,
-        )
+
+        if 'Dino' in args.model:
+            self.net = DinoJiT_models[args.model](
+                num_classes=args.class_num,
+            )
+        else:
+            self.net = JiT_models[args.model](
+                input_size=args.img_size,
+                in_channels=3,
+                num_classes=args.class_num,
+                attn_drop=args.attn_dropout,
+                proj_drop=args.proj_dropout,
+            )
+        print_trainable(self.net)
+
+
         self.img_size = args.img_size
         self.num_classes = args.class_num
 

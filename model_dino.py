@@ -218,8 +218,8 @@ class DinoJiT(nn.Module):
 
 
 def DinoJiT_B_16(**kwargs):
-    return DinoJiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
+    dinov2_vitb14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
+    return DinoJiT(dino_model=dinov2_vitb14, patch_size=16, **kwargs)
 
 
 DinoJiT_models = {

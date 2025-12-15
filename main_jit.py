@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
-from util.crop import center_crop_arr
+from util.crop import center_crop_arr, crop_dinov2, load_ds_train
 import util.misc as misc
 
 import copy
@@ -25,7 +25,7 @@ def get_args_parser():
 
     # architecture
     parser.add_argument('--model', default='JiT-B/16', type=str, metavar='MODEL',
-                        help='Name of the model to train')
+                        help='Name of the model to train') # Two families: ['JiT-B/16', ...]; ['DinoJiT-B/16', ...]
     parser.add_argument('--img_size', default=256, type=int, help='Image size')
     parser.add_argument('--attn_dropout', type=float, default=0.0, help='Attention dropout rate')
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
@@ -137,12 +137,19 @@ def main(args):
         log_writer = None
 
     # Data augmentation transforms
-    transform_train = transforms.Compose([
-        transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
-        transforms.RandomHorizontalFlip(),
-        transforms.PILToTensor()
-    ])
-
+    if 'Dino' in args.model: 
+        transform_train = transforms.Compose([ 
+                transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
+                transforms.RandomHorizontalFlip(), 
+                transforms.PILToTensor(),
+                transforms.Lambda(lambda img: crop_dinov2(img, args.img_size)), 
+            ])
+    else:
+        transform_train = transforms.Compose([
+                          transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
+                          transforms.RandomHorizontalFlip(),
+                          transforms.PILToTensor()
+                        ])
     dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     print(dataset_train)
 
