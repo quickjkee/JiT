@@ -32,7 +32,12 @@ logger = logging.getLogger("dinov2")
 
 
 def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    x = x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    return x
+
+def gate(x, gate_):
+    x = gate_.unsqueeze(1) * x
+    return x
 
 
 class TimestepEmbedder(nn.Module):
@@ -92,18 +97,23 @@ class LabelEmbedder(nn.Module):
 class BlockWithAdaLN(nn.Module):
     def __init__(self, blk, dim, cond_dim):
         super().__init__()
+
+        # Reuse the exact submodules/attrs from blk
         self.norm1 = blk.norm1
         self.attn  = blk.attn
+        self.ls1   = blk.ls1
+        self.drop_path1 = blk.drop_path1
+
         self.norm2 = blk.norm2
         self.mlp   = blk.mlp
-        self.drop_path = getattr(blk, "drop_path", nn.Identity())
+        self.ls2   = blk.ls2
 
-        self.ls1 = getattr(blk, "ls1", nn.Identity())
-        self.ls2 = getattr(blk, "ls2", nn.Identity())
+        self.sample_drop_ratio = getattr(blk, "sample_drop_ratio", 0.0)
 
+        # AdaLN params
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(cond_dim, 6 * dim, bias=True)
+            nn.Linear(cond_dim, 6 * dim, bias=True),
         )
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
@@ -121,10 +131,13 @@ class BlockWithAdaLN(nn.Module):
                 self.adaLN_modulation(c).chunk(6, dim=-1)
 
         attn_out = self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        mlp_out  = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        attn_out = gate(attn_out, gate_msa)
+        x = x + self.drop_path1(self.ls1(attn_out))
 
-        x = x + self.drop_path(self.ls1(gate_msa.unsqueeze(1) * attn_out))
-        x = x + self.drop_path(self.ls2(gate_mlp.unsqueeze(1) * mlp_out))
+        mlp_out  = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        mlp_out = gate(mlp_out, gate_mlp)
+        x = x + self.drop_path1(self.ls2(mlp_out)) 
+        
         return x
 
 
@@ -163,9 +176,9 @@ class DinoJiT(nn.Module):
         super().__init__()
 
         self.dino_model = dino_model
-        self.dino_model.requires_grad_(True)
-        self.dino_model.train()
-        self.dino_model.mask_token.requires_grad_(False)
+        #self.dino_model.requires_grad_(True)
+        #self.dino_model.train()
+        #self.dino_model.mask_token.requires_grad_(False)
 
         self.hidden_size = self.dino_model.embed_dim
         self.num_classes = num_classes
@@ -175,7 +188,7 @@ class DinoJiT(nn.Module):
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, self.hidden_size)
-        self.dino_model.blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
+        self.blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
         self.final_layer = FinalLayer(self.hidden_size, patch_size, self.out_channels)
 
 
@@ -217,16 +230,18 @@ class DinoJiT(nn.Module):
         x = self.dino_model.prepare_tokens_with_masks(x, None)
 
 
-        for _, block in enumerate(self.dino_model.blocks):
+        for _, block in enumerate(self.blocks):
             x = block(x, c)
 
-        x = self.dino_model.norm(x)[:, self.dino_model.num_register_tokens + 1 :]
+        x = self.dino_model.norm(x)
+        cls = x[:, 0] 
+        x = x[:, 1 + self.dino_model.num_register_tokens :]  # [B, N, D]
 
         if t is not None and y is not None:
             x = self.final_layer(x, c)
             output = self.unpatchify(x, self.patch_size)
         else:
-            output = x
+            output = x, cls
 
         return output
 
