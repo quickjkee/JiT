@@ -213,19 +213,10 @@ class DinoJiT(nn.Module):
         t: (N,)
         y: (N,)
         """
-
-        # Dino as diffusion
-
-        # JiT (full pixel space)
-        # Init DINO + adaln
-        # RAE (dino space + pixel space)
-        # Encoder (DINO) -> Decoder
-
         x = F.interpolate(
             x, size=(224, 224), mode="bicubic", align_corners=False
         )
-        x = x.clamp(-1, 1)          # or torch.tanh(z224)
-        x = (x + 1) * 0.5           # -> [0,1]
+        x = (x - x.min()) / (x.max() - x.min() + 1e-8)
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
 
         # class and time embeddings
