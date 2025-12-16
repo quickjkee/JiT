@@ -163,8 +163,8 @@ class DinoJiT(nn.Module):
         super().__init__()
 
         self.dino_model = dino_model
-        self.dino_model.requires_grad_(False)
-        self.dino_model.eval()
+        self.dino_model.requires_grad_(True)
+        self.dino_model.train()
 
         self.hidden_size = self.dino_model.embed_dim
         self.num_classes = num_classes
