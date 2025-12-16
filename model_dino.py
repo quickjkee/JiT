@@ -176,6 +176,7 @@ class DinoJiT(nn.Module):
         super().__init__()
 
         self.dino_model = dino_model
+        self.dino_model.requires_grad_(False)
         #self.dino_model.requires_grad_(True)
         #self.dino_model.train()
         #self.dino_model.mask_token.requires_grad_(False)
@@ -212,6 +213,13 @@ class DinoJiT(nn.Module):
         t: (N,)
         y: (N,)
         """
+
+        # Dino as diffusion
+
+        # JiT (full pixel space)
+        # Init DINO + adaln
+        # RAE (dino space + pixel space)
+        # Encoder (DINO) -> Decoder
 
         x = F.interpolate(
             x, size=(224, 224), mode="bicubic", align_corners=False
