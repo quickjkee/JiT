@@ -231,13 +231,7 @@ class DinoJiT(nn.Module):
 
 
 def DinoJiT_B_16(**kwargs):
-    dinov2_vitb14 = torch.hub.load(
-                                    "facebookresearch/dinov2:main",
-                                    "dinov2_vitb14",
-                                    source="github",
-                                    force_reload=True,
-                                    trust_repo=True,
-                                )
+    dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14", trust_repo=True, force_reload=False)
     return DinoJiT(dino_model=dinov2_vitb14, patch_size=16, **kwargs)
 
 
