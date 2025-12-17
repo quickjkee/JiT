@@ -209,7 +209,7 @@ class DinoJiT(nn.Module):
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=self.in_context_len
+            num_cls_token=in_context_len
         )
 
         self.decoder_blocks = nn.ModuleList([
