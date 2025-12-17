@@ -37,6 +37,9 @@ class Denoiser(nn.Module):
         if 'Dino' in args.model:
             self.net = DinoJiT_models[args.model](
                 num_classes=args.class_num,
+                input_size=args.img_size,
+                attn_drop=args.attn_dropout,
+                proj_drop=args.proj_dropout,
             )
         else:
             self.net = JiT_models[args.model](

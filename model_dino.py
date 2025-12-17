@@ -17,6 +17,7 @@ import torch.utils.checkpoint
 import os, torch, torch.distributed as dist
 
 from util.model_util import RMSNorm
+from model_jit import JiTBlock, VisionRotaryEmbeddingFast
 import torch.nn.functional as F
 from torchvision.transforms import Normalize
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
@@ -172,25 +173,81 @@ class DinoJiT(nn.Module):
         dino_model,
         patch_size=16,
         num_classes=1000,
+        input_size=256,
+        mlp_ratio=4.0,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        depth=12,
+        num_heads=16,
     ):
         super().__init__()
 
         self.dino_model = dino_model
-        #self.dino_model.requires_grad_(False)
-        self.dino_model.requires_grad_(True)
-        self.dino_model.train()
-        self.dino_model.mask_token.requires_grad_(False)
+        self.dino_model.requires_grad_(False)
 
         self.hidden_size = self.dino_model.embed_dim
         self.num_classes = num_classes
         self.patch_size = patch_size
+        self.input_size = input_size
         self.out_channels = 3
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, self.hidden_size)
-        self.blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
+
+        self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
+
+        half_head_dim = self.hidden_size // num_heads // 2
+        hw_seq_len = self.input_size // self.patch_size
+        self.feat_rope = VisionRotaryEmbeddingFast(
+            dim=half_head_dim,
+            pt_seq_len=hw_seq_len,
+            num_cls_token=0
+        )
+        self.feat_rope_incontext = VisionRotaryEmbeddingFast(
+            dim=half_head_dim,
+            pt_seq_len=hw_seq_len,
+            num_cls_token=self.in_context_len
+        )
+
+        self.decoder_blocks = nn.ModuleList([
+            JiTBlock(self.hidden_size, num_heads, mlp_ratio=mlp_ratio,
+                     attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
+            for i in range(depth)
+        ])
+
         self.final_layer = FinalLayer(self.hidden_size, patch_size, self.out_channels)
+
+        self.initialize_weights()
+
+
+    def initialize_weights(self):
+        # Initialize transformer layers:
+        def _basic_init(module):
+            if isinstance(module, nn.Linear) and any(p.requires_grad for p in module.parameters()):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        self.apply(_basic_init)
+
+        # Initialize label embedding table:
+        nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+
+        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
+        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
+
+        # Zero-out adaLN modulation layers:
+        for block in self.decoder_blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+
+        # Zero-out output layers:
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
+
+        nn.init.constant_(self.final_layer.linear.weight, 0)
+        nn.init.constant_(self.final_layer.linear.bias, 0)
 
 
     def unpatchify(self, x, p):
@@ -229,25 +286,35 @@ class DinoJiT(nn.Module):
         x = self.dino_model.prepare_tokens_with_masks(x, None)
 
 
-        for _, block in enumerate(self.blocks):
+        for _, block in enumerate(self.encoder_blocks):
             x = block(x, c)
 
         x = self.dino_model.norm(x)
         cls = x[:, 0] 
         x = x[:, 1 + self.dino_model.num_register_tokens :]  # [B, N, D]
 
-        if t is not None and y is not None:
-            x = self.final_layer(x, c)
-            output = self.unpatchify(x, self.patch_size)
-        else:
-            output = x, cls
+        if t is None and y is None:
+            return x, cls
+
+        for i, block in enumerate(self.decoder_blocks):
+            if self.in_context_len > 0 and i == self.in_context_start:
+                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                in_context_tokens += self.in_context_posemb
+                x = torch.cat([in_context_tokens, x], dim=1)
+            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
+
+        x = x[:, self.in_context_len:]
+
+        x = self.final_layer(x, c)
+        output = self.unpatchify(x, self.patch_size)
 
         return output
 
 
 def DinoJiT_B_16(**kwargs):
     dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14", trust_repo=True, force_reload=False)
-    return DinoJiT(dino_model=dinov2_vitb14, patch_size=16, **kwargs)
+    return DinoJiT(dino_model=dinov2_vitb14, depth=12, num_heads=12,
+                   in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
 
 
 DinoJiT_models = {
