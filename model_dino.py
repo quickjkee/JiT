@@ -191,6 +191,8 @@ class DinoJiT(nn.Module):
         self.num_classes = num_classes
         self.patch_size = patch_size
         self.input_size = input_size
+        self.in_context_len = in_context_len
+        self.in_context_start = in_context_start
         self.out_channels = 3
 
         # time and class embed
@@ -198,6 +200,11 @@ class DinoJiT(nn.Module):
         self.y_embedder = LabelEmbedder(num_classes, self.hidden_size)
 
         self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
+
+        # in-context cls token
+        if self.in_context_len > 0:
+            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, self.hidden_size), requires_grad=True)
+            torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
         half_head_dim = self.hidden_size // num_heads // 2
         hw_seq_len = self.input_size // self.patch_size
@@ -293,7 +300,7 @@ class DinoJiT(nn.Module):
 
         x = self.dino_model.norm(x)
         cls = x[:, 0] 
-        x = x[:, 1 + self.dino_model.num_register_tokens :]  # [B, N, D]
+        x = x[:, 1 + self.dino_model.num_register_tokens :]
 
         if t is None and y is None:
             return x, cls
