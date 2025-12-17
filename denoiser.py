@@ -40,6 +40,7 @@ class Denoiser(nn.Module):
                 input_size=args.img_size,
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
+                do_decoder=args.do_decoder
             )
         else:
             self.net = JiT_models[args.model](
@@ -107,6 +108,7 @@ class Denoiser(nn.Module):
             # l2 loss
             v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
             loss = (v - v_pred) ** 2
+            # repa
             loss_repa = (x_mid - dino_feats) ** 2
             loss = (loss + loss_repa).mean(dim=(1, 2, 3)).mean()
 

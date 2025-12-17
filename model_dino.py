@@ -180,7 +180,8 @@ class DinoJiT(nn.Module):
         depth=12,
         num_heads=16,
         in_context_len=32,
-        in_context_start=8
+        in_context_start=8,
+        do_decoder=True,
     ):
         super().__init__()
 
@@ -194,6 +195,7 @@ class DinoJiT(nn.Module):
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
         self.out_channels = 3
+        self.do_decoder = do_decoder
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
@@ -219,12 +221,13 @@ class DinoJiT(nn.Module):
             num_cls_token=in_context_len
         )
 
-        self.decoder_blocks = nn.ModuleList([
-            JiTBlock(self.hidden_size, num_heads, mlp_ratio=mlp_ratio,
-                     attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
-            for i in range(depth)
-        ])
+        if self.do_decoder:
+            self.decoder_blocks = nn.ModuleList([
+                JiTBlock(self.hidden_size, num_heads, mlp_ratio=mlp_ratio,
+                        attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                        proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
+                for i in range(depth)
+            ])
 
         self.final_layer = FinalLayer(self.hidden_size, patch_size, self.out_channels)
 
@@ -247,9 +250,10 @@ class DinoJiT(nn.Module):
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
         # Zero-out adaLN modulation layers:
-        for block in self.decoder_blocks:
-            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
-            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+        if self.do_decoder:
+            for block in self.decoder_blocks:
+                nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+                nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
@@ -306,14 +310,14 @@ class DinoJiT(nn.Module):
         if t is None and y is None:
             return x, cls
 
-        for i, block in enumerate(self.decoder_blocks):
-            if self.in_context_len > 0 and i == self.in_context_start:
-                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens += self.in_context_posemb
-                x = torch.cat([in_context_tokens, x], dim=1)
-            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
-
-        x = x[:, self.in_context_len:]
+        if self.do_decoder:
+            for i, block in enumerate(self.decoder_blocks):
+                if self.in_context_len > 0 and i == self.in_context_start:
+                    in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                    in_context_tokens += self.in_context_posemb
+                    x = torch.cat([in_context_tokens, x], dim=1)
+                x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
+            x = x[:, self.in_context_len:]
 
         x = self.unpatchify(self.final_layer(x, c), self.patch_size)
         output = x if not do_repa else (x, x_mid)
