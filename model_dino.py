@@ -179,6 +179,8 @@ class DinoJiT(nn.Module):
         proj_drop=0.0,
         depth=12,
         num_heads=16,
+        in_context_len=32,
+        in_context_start=8
     ):
         super().__init__()
 
