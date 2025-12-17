@@ -204,7 +204,7 @@ class DinoJiT(nn.Module):
         self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
 
         # in-context cls token
-        if self.in_context_len > 0:
+        if self.in_context_len > 0 and self.do_decoder:
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, self.hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
