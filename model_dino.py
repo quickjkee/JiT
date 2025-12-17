@@ -283,7 +283,6 @@ class DinoJiT(nn.Module):
             x, size=(224, 224), mode="bicubic", align_corners=False
         )
         x = (x + 1.0) * 0.5          # [-1,1] → [0,1]
-        x = x.clamp(0.0, 1.0)        # keep valid pixel range
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
 
         # class and time embeddings
@@ -316,7 +315,7 @@ class DinoJiT(nn.Module):
 
         x = x[:, self.in_context_len:]
 
-        x = self.unpatchify(self.final_layer(x, c))
+        x = self.unpatchify(self.final_layer(x, c), self.patch_size)
         output = x if not do_repa else (x, x_mid)
 
         return output
