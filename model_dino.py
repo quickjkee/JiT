@@ -273,7 +273,7 @@ class DinoJiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y):
+    def forward(self, x, t, y, do_repa=False):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -282,7 +282,8 @@ class DinoJiT(nn.Module):
         x = F.interpolate(
             x, size=(224, 224), mode="bicubic", align_corners=False
         )
-        x = (x - x.min()) / (x.max() - x.min() + 1e-8)
+        x = (x + 1.0) * 0.5          # [-1,1] → [0,1]
+        x = x.clamp(0.0, 1.0)        # keep valid pixel range
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
 
         # class and time embeddings
@@ -300,7 +301,8 @@ class DinoJiT(nn.Module):
 
         x = self.dino_model.norm(x)
         cls = x[:, 0] 
-        x = x[:, 1 + self.dino_model.num_register_tokens :]
+        x_mid = x[:, 1 + self.dino_model.num_register_tokens :]
+        x = x_mid
 
         if t is None and y is None:
             return x, cls
@@ -314,8 +316,8 @@ class DinoJiT(nn.Module):
 
         x = x[:, self.in_context_len:]
 
-        x = self.final_layer(x, c)
-        output = self.unpatchify(x, self.patch_size)
+        x = self.unpatchify(self.final_layer(x, c))
+        output = x if not do_repa else (x, x_mid)
 
         return output
 

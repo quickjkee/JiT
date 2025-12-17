@@ -82,7 +82,7 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, x, labels):
+    def forward(self, x, labels, do_repa=False):
         labels_dropped = self.drop_labels(labels) if self.training else labels
 
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
@@ -91,12 +91,24 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred = self.net(z, t.flatten(), labels_dropped)
-        v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
+        if do_repa:
+            with torch.no_grad():
+                dino_feats, _ = self.net(x, None, None)
 
-        # l2 loss
-        loss = (v - v_pred) ** 2
-        loss = loss.mean(dim=(1, 2, 3)).mean()
+        x_pred = self.net(z, t.flatten(), labels_dropped, do_repa)
+    
+        if not do_repa:
+            # l2 loss
+            v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
+            loss = (v - v_pred) ** 2
+            loss = loss.mean(dim=(1, 2, 3)).mean()
+        else:
+            x_pred, x_mid = x_pred[0], x_pred[1]
+            # l2 loss
+            v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
+            loss = (v - v_pred) ** 2
+            loss_repa = (x_mid - dino_feats) ** 2
+            loss = (loss + loss_repa).mean(dim=(1, 2, 3)).mean()
 
         return loss
 
