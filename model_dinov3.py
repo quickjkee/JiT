@@ -310,7 +310,6 @@ class DINOv3JiT(nn.Module):
         x, rope = [x], [rope]
         # -----------------------------------------
 
-
         # Encoder part
         # -----------------------------------------
         for _, block in enumerate(self.encoder_blocks):

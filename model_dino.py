@@ -286,13 +286,17 @@ class DinoJiT(nn.Module):
         t: (N,)
         y: (N,)
         """
+        # DINOv2 input specific
+        # -----------------------------------------
         x = F.interpolate(
             x, size=(224, 224), mode="bicubic", align_corners=False
         )
         x = (x + 1.0) * 0.5          # [-1,1] → [0,1]
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+        # -----------------------------------------
 
-        # class and time embeddings
+        # Start embedding
+        # -----------------------------------------
         if t is not None and y is not None:
             t_emb = self.t_embedder(t)
             y_emb = self.y_embedder(y)
@@ -300,8 +304,10 @@ class DinoJiT(nn.Module):
         else:
             c = None
         x = self.dino_model.prepare_tokens_with_masks(x, None)
+        # -----------------------------------------
 
-
+        # Encoder part
+        # -----------------------------------------
         for _, block in enumerate(self.encoder_blocks):
             x = block(x, c)
 
@@ -312,7 +318,10 @@ class DinoJiT(nn.Module):
 
         if t is None and y is None:
             return x, cls
+        # -----------------------------------------
 
+        # Decoder part
+        # -----------------------------------------
         if self.do_decoder:
             for i, block in enumerate(self.decoder_blocks):
                 if self.in_context_len > 0 and i == self.in_context_start:
@@ -324,6 +333,7 @@ class DinoJiT(nn.Module):
 
         x = self.unpatchify(self.final_layer(x, c), self.patch_size)
         output = x if not do_repa else (x, x_mid)
+        # -----------------------------------------
 
         return output
 
