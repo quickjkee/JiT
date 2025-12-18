@@ -38,7 +38,7 @@ def repa_loss(dino_feats, x_mid):
     dino_feats = F.normalize(dino_feats, dim=-1) # [B,T,D]
     x_mid = F.normalize(x_mid, dim=-1) # [B,T,D]
     cos_sim = (dino_feats * x_mid).sum(dim=-1)    # [B,T]
-    loss_repa = -cos_sim.mean(dim=(1, 2, 3)).mean()
+    loss_repa = -cos_sim.mean(dim=(1)).mean()
     return loss_repa
 
 
@@ -99,9 +99,10 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, x, labels, do_repa=False):
-        labels_dropped = self.drop_labels(labels) if self.training else labels
+    def forward(self, x, labels, repa_coeff=0.0):
+        do_repa = repa_coeff > 0.0
 
+        labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
 
@@ -124,7 +125,7 @@ class Denoiser(nn.Module):
             v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
             loss = diffusion_loss(v, v_pred)
             loss_repa = repa_loss(dino_feats, x_mid)
-            loss = loss + 0.5 * loss_repa
+            loss = loss + repa_coeff * loss_repa
 
         return loss
 
