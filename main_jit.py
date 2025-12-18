@@ -31,6 +31,8 @@ def get_args_parser():
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
     parser.add_argument('--do_decoder', action='store_true',
                         help='whether to use large decoder for DinoJiT setup')
+    parser.add_argument('--do_repa', action='store_true',
+                        help='whether to use repa loss for DinoJiT setup')
 
     # training
     parser.add_argument('--epochs', default=200, type=int)

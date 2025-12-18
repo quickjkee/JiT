@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from model_jit import JiT_models
 from model_dino import DinoJiT_models
 
@@ -25,6 +26,21 @@ def print_trainable(model):
     print(f"Frozen params:    {frozen:,}")
     print(f"Total params:     {total:,}")
     print(f"Trainable ratio:  {100 * trainable / total:.2f}%")
+
+
+def diffusion_loss(v, v_pred):
+    loss = (v - v_pred) ** 2
+    loss = loss.mean(dim=(1, 2, 3)).mean()
+    return loss
+
+
+def repa_loss(dino_feats, x_mid):
+    dino_feats = F.normalize(dino_feats, dim=-1) # [B,T,D]
+    x_mid = F.normalize(x_mid, dim=-1) # [B,T,D]
+    cos_sim = (dino_feats * x_mid).sum(dim=-1)    # [B,T]
+    loss_repa = -cos_sim.mean(dim=(1, 2, 3)).mean()
+    return loss_repa
+
 
 
 class Denoiser(nn.Module):
@@ -95,22 +111,20 @@ class Denoiser(nn.Module):
         if do_repa:
             with torch.no_grad():
                 dino_feats, _ = self.net(x, None, None)
-
         x_pred = self.net(z, t.flatten(), labels_dropped, do_repa)
-    
+
+        # dm loss only
         if not do_repa:
-            # l2 loss
             v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-            loss = (v - v_pred) ** 2
-            loss = loss.mean(dim=(1, 2, 3)).mean()
+            loss = diffusion_loss(v, v_pred)
+
+        # dm + repa loss
         else:
             x_pred, x_mid = x_pred[0], x_pred[1]
-            # l2 loss
             v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-            loss = (v - v_pred) ** 2
-            # repa
-            loss_repa = (x_mid - dino_feats) ** 2
-            loss = (loss + loss_repa).mean(dim=(1, 2, 3)).mean()
+            loss = diffusion_loss(v, v_pred)
+            loss_repa = repa_loss(dino_feats, x_mid)
+            loss = loss + 0.5 * loss_repa
 
         return loss
 

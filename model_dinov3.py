@@ -22,9 +22,7 @@ import torch.nn.functional as F
 from torchvision.transforms import Normalize
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-logger = logging.getLogger("dinov2")
-
-
+logger = logging.getLogger("dinov3")
 
 
 ########################################################################################################################
@@ -186,6 +184,13 @@ class DINOv3JiT(nn.Module):
     ):
         super().__init__()
 
+        # Encoder part
+        # -----------------------------------------
+        self.dino_model = dino_model
+        self.dino_model.requires_grad_(False)
+        self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, dino_model.embed_dim, dino_model.embed_dim) for b in self.dino_model.blocks])
+        # -----------------------------------------
+
         # Params
         # -----------------------------------------
         self.hidden_size = self.dino_model.embed_dim
@@ -197,15 +202,6 @@ class DINOv3JiT(nn.Module):
         self.out_channels = 3
         self.do_decoder = do_decoder
         # -----------------------------------------
-
-
-        # Encoder part
-        # -----------------------------------------
-        self.dino_model = dino_model
-        self.dino_model.requires_grad_(False)
-        self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
-        # -----------------------------------------
-
 
         # Decoder part, diffusion specific
         # -----------------------------------------
@@ -324,7 +320,7 @@ class DINOv3JiT(nn.Module):
         x = x[0]
         x = self.dino_model.norm(x)
         x_cls_reg = x[:, : self.dino_model.n_storage_tokens + 1]
-        cls = x_cls_reg[:, 0],
+        cls = x_cls_reg[:, 0]
         x_mid = x[:, self.dino_model.n_storage_tokens + 1 :]
         x = x_mid
 
@@ -353,9 +349,9 @@ class DINOv3JiT(nn.Module):
 # TODO
 def DINOv3JiT_B_16(**kwargs):
     REPO_DIR = 'dinov3'
-    dinov2_vitb14 = torch.hub.load(REPO_DIR, 'dinov3_vith16plus', 
+    dinov2_vitb14 = torch.hub.load(REPO_DIR, 'dinov3_vitb16', 
                                source='local', 
-                               weights='models/dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth')
+                               weights='models/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth')
     return DINOv3JiT(dino_model=dinov2_vitb14, depth=12, num_heads=12,
                    in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
 
