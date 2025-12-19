@@ -246,7 +246,9 @@ class DinoJiT(nn.Module):
     def initialize_weights(self):
         # Initialize transformer layers:
         def _basic_init(module):
-            if isinstance(module, nn.Linear) and any(p.requires_grad for p in module.parameters()):
+            if isinstance(module, nn.Linear) \
+            and any(p.requires_grad for p in module.parameters(recurse=False)) \
+            and not any(module is m for m in self.dino_model.modules()):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
