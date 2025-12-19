@@ -121,7 +121,7 @@ class Denoiser(nn.Module):
             else:
                 trainable = [p for p in teacher_model.parameters() if p.requires_grad]
                 for p in trainable: p.requires_grad_(False)
-                dino_feats, _ = teacher_model(x, None, None)
+                dino_feats, _ = teacher_model.net(x, None, None)
                 for p in trainable: p.requires_grad_(True)
 
         return dino_feats
