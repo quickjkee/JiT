@@ -31,6 +31,8 @@ def get_args_parser():
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
     parser.add_argument('--do_decoder', action='store_true',
                         help='whether to use large decoder for DinoJiT setup')
+    parser.add_argument('--do_self_repa', action='store_true',
+                        help='whether to use repa loss on the model (EMA) itself')
     parser.add_argument('--do_adaln_encoder', action='store_true',
                         help='whether to apply adaln layers to encoder for DinoJiT setup')
     parser.add_argument('--repa_coeff', default=0.0, type=float,

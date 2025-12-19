@@ -101,18 +101,29 @@ class Denoiser(nn.Module):
 
     
     @torch.no_grad()
-    def _forward_teacher(self, x):
+    def _forward_teacher(self, x, teacher_model=None):
+
         # If adaln setup, then a teacher (dino) is included into the model
         if self.args.do_adaln_encoder:
             dino_feats, _ = self.net(x, None, None)
-        # If not adaln setup, then a teacher (dino) is a separated model (copy)
+
+        # If not adaln setup, then 
+        # Case 1. Teacher (dino) is a separated model (copy)
+        # Case 2. Teacher is the model itself (EMA) but without noisy input
         else:
-            x_dino = F.interpolate(
-                    x, size=(224, 224), mode="bicubic", align_corners=False
-                )
-            x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
-            x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
-            dino_feats = self.net_teacher.forward_features(x_dino)["x_norm_patchtokens"]
+            if teacher_model is None:
+                x_dino = F.interpolate(
+                        x, size=(224, 224), mode="bicubic", align_corners=False
+                    )
+                x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
+                x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
+                dino_feats = self.net_teacher.forward_features(x_dino)["x_norm_patchtokens"]
+            else:
+                trainable = [p for p in teacher_model.parameters() if p.requires_grad]
+                for p in trainable: p.requires_grad_(False)
+                dino_feats, _ = teacher_model(x, None, None)
+                for p in trainable: p.requires_grad_(True)
+
         return dino_feats
 
     def drop_labels(self, labels):
@@ -124,7 +135,8 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, x, labels, repa_coeff=0.0):
+    def forward(self, x, labels, 
+                repa_coeff=0.0, teacher_model=None):
         do_repa = repa_coeff > 0.0
 
         labels_dropped = self.drop_labels(labels) if self.training else labels
@@ -135,7 +147,7 @@ class Denoiser(nn.Module):
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
         if do_repa:
-            dino_feats = self._forward_teacher(x)
+            dino_feats = self._forward_teacher(x, teacher_model)
         x_pred = self.net(z, t.flatten(), labels_dropped, do_repa)
 
         # dm loss only
