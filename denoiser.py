@@ -1,8 +1,12 @@
+from ast import arg
 import torch
 import torch.nn as nn
+import copy
 import torch.nn.functional as F
 from model_jit import JiT_models
 from model_dino import DinoJiT_models
+from torchvision.transforms import Normalize
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 def print_trainable(model):
@@ -56,8 +60,12 @@ class Denoiser(nn.Module):
                 input_size=args.img_size,
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
-                do_decoder=args.do_decoder
+                do_decoder=args.do_decoder,
+                do_adaln_encoder=args.do_adaln_encoder
             )
+            if not args.do_adaln_encoder:
+                self.net_teacher = copy.deepcopy(self.net.dino_model).eval()
+                self.net_teacher.requires_grad_(False)
         else:
             self.net = JiT_models[args.model](
                 input_size=args.img_size,
@@ -71,6 +79,7 @@ class Denoiser(nn.Module):
 
         self.img_size = args.img_size
         self.num_classes = args.class_num
+        self.args = args
 
         self.label_drop_prob = args.label_drop_prob
         self.P_mean = args.P_mean
@@ -89,6 +98,22 @@ class Denoiser(nn.Module):
         self.steps = args.num_sampling_steps
         self.cfg_scale = args.cfg
         self.cfg_interval = (args.interval_min, args.interval_max)
+
+    
+    @torch.no_grad()
+    def _forward_teacher(self, x):
+        # If adaln setup, then a teacher (dino) is included into the model
+        if self.args.do_adaln_encoder:
+            dino_feats, _ = self.net(x, None, None)
+        # If not adaln setup, then a teacher (dino) is a separated model (copy)
+        else:
+            x_dino = F.interpolate(
+                    x, size=(224, 224), mode="bicubic", align_corners=False
+                )
+            x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
+            x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
+            dino_feats = self.net_teacher.forward_features(x_dino)["x_norm_patchtokens"]
+        return dino_feats
 
     def drop_labels(self, labels):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
@@ -110,8 +135,7 @@ class Denoiser(nn.Module):
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
         if do_repa:
-            with torch.no_grad():
-                dino_feats, _ = self.net(x, None, None)
+            dino_feats = self._forward_teacher(x)
         x_pred = self.net(z, t.flatten(), labels_dropped, do_repa)
 
         # dm loss only

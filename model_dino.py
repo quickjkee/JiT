@@ -182,14 +182,12 @@ class DinoJiT(nn.Module):
         in_context_len=32,
         in_context_start=8,
         do_decoder=True,
+        do_adaln_encoder=True,
     ):
         super().__init__()
 
         self.dino_model = dino_model
         self.dino_model.requires_grad_(False)
-        #self.dino_model.requires_grad_(True)
-        #self.dino_model.train()
-        #self.dino_model.mask_token.requires_grad_(False)
 
         self.hidden_size = self.dino_model.embed_dim
         self.num_classes = num_classes
@@ -199,12 +197,20 @@ class DinoJiT(nn.Module):
         self.in_context_start = in_context_start
         self.out_channels = 3
         self.do_decoder = do_decoder
+        self.do_adaln_encoder = do_adaln_encoder
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, self.hidden_size)
 
-        self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
+        if self.do_adaln_encoder:
+            self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
+        else:
+            self.encoder_blocks = self.dino_model.blocks
+            for block in dino_model.blocks[-4:]:
+                for p in block.parameters():
+                    p.requires_grad = True
+            self.dino_model.norm.requires_grad_(True)
 
         # in-context cls token
         if self.in_context_len > 0 and self.do_decoder:
@@ -297,19 +303,19 @@ class DinoJiT(nn.Module):
 
         # Start embedding
         # -----------------------------------------
+        x = self.dino_model.prepare_tokens_with_masks(x, None)
         if t is not None and y is not None:
             t_emb = self.t_embedder(t)
             y_emb = self.y_embedder(y)
             c = t_emb + y_emb
         else:
             c = None
-        x = self.dino_model.prepare_tokens_with_masks(x, None)
         # -----------------------------------------
 
         # Encoder part
         # -----------------------------------------
         for _, block in enumerate(self.encoder_blocks):
-            x = block(x, c)
+            x = block(x, c) if self.do_adaln_encoder else block(x)
 
         x = self.dino_model.norm(x)
         cls = x[:, 0] 
