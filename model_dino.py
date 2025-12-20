@@ -209,8 +209,8 @@ class DinoJiT(nn.Module):
             self.encoder_blocks = self.dino_model.blocks
             for block in dino_model.blocks[-4:]:
                 for p in block.parameters():
-                    p.requires_grad = False
-            self.dino_model.norm.requires_grad_(False)
+                    p.requires_grad = True
+            self.dino_model.norm.requires_grad_(True)
 
         # in-context cls token
         if self.in_context_len > 0 and self.do_decoder:
