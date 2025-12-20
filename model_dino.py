@@ -209,8 +209,8 @@ class DinoJiT(nn.Module):
             self.encoder_blocks = self.dino_model.blocks
             for block in dino_model.blocks[-4:]:
                 for p in block.parameters():
-                    p.requires_grad = True
-            self.dino_model.norm.requires_grad_(True)
+                    p.requires_grad = False
+            self.dino_model.norm.requires_grad_(False)
 
         # in-context cls token
         if self.in_context_len > 0 and self.do_decoder:
@@ -348,7 +348,7 @@ class DinoJiT(nn.Module):
 
 def DinoJiT_B_16(**kwargs):
     dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14", trust_repo=True, force_reload=False)
-    return DinoJiT(dino_model=dinov2_vitb14, depth=6, num_heads=12,
+    return DinoJiT(dino_model=dinov2_vitb14, depth=8, num_heads=12,
                    in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
 
 
