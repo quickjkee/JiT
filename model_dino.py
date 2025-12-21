@@ -312,6 +312,7 @@ class DinoJiT(nn.Module):
             c = t_emb + y_emb
         else:
             c = None
+            t_emb = None
         # -----------------------------------------
 
         # Encoder part
