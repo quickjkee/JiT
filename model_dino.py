@@ -317,7 +317,7 @@ class DinoJiT(nn.Module):
         # Encoder part
         # -----------------------------------------
         for _, block in enumerate(self.encoder_blocks):
-            x = block(x, c) if self.do_adaln_encoder else block(x)
+            x = block(x, t_emb) if self.do_adaln_encoder else block(x)
 
         x = self.dino_model.norm(x)
         cls = x[:, 0] 
