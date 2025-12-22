@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import copy
 import torch.nn.functional as F
+from math import exp
 from model_jit import JiT_models
 from model_dino import DinoJiT_models
 from torchvision.transforms import Normalize
@@ -38,13 +39,20 @@ def diffusion_loss(v, v_pred):
     return loss
 
 
-def repa_loss(dino_feats, x_mid):
+def weighting_fn(t):
+    w = torch.where(t < 0.8, torch.ones_like(t), torch.zeros_like(t))
+    return w.unsqueeze(1)
+
+
+def repa_loss(dino_feats, x_mid, t=None):
     dino_feats = F.normalize(dino_feats, dim=-1) # [B,T,D]
     x_mid = F.normalize(x_mid, dim=-1) # [B,T,D]
     cos_sim = (dino_feats * x_mid).sum(dim=-1)    # [B,T]
-    loss_repa = -cos_sim.mean(dim=(1)).mean()
+    if t is not None:
+        w = weighting_fn(t)
+        cos_sim = w * cos_sim
+    loss_repa = -cos_sim.mean(dim=(1)).sum() / w.sum()
     return loss_repa
-
 
 
 class Denoiser(nn.Module):
@@ -160,7 +168,7 @@ class Denoiser(nn.Module):
             x_pred, x_mid = x_pred[0], x_pred[1]
             v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
             loss = diffusion_loss(v, v_pred)
-            loss_repa = repa_loss(dino_feats, x_mid)
+            loss_repa = repa_loss(dino_feats, x_mid, t=t.flatten())
             loss = loss + repa_coeff * loss_repa
 
         return loss

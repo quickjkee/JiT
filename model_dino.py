@@ -124,12 +124,12 @@ class BlockWithAdaLN(nn.Module):
         def exp_(x, k=5):
             return 1 - torch.exp(-k * x)
 
-        def curve(x, k=16.1118962790027, a=5.61244287988436):
+        def curve(x, k=20.1118962790027, a=5.61244287988436):
             x = torch.clip(x, 0, 1)
             return (1 - torch.exp(-k * x**a)) / (1 - exp(-k)) 
 
         w = curve(t)
-        return w.unsqueeze(1)
+        return w.unsqueeze(1).unsqueeze(2)
 
     def forward(self, x, c=None, weights=None):
         B, N, D = x.shape
@@ -145,18 +145,18 @@ class BlockWithAdaLN(nn.Module):
                 self.adaLN_modulation(c).chunk(6, dim=-1)
             w = self._weighting_fn(weights)
 
-        x = self.norm1(x)
-        x_mod_msa = modulate(x, shift_msa, scale_msa)
-        x_mod_msa = (1 - w) * x_mod_msa + w * x 
+        x_norm = self.norm1(x)
+        x_mod_msa = modulate(x_norm, shift_msa, scale_msa)
+        x_mod_msa = (1 - w) * x_mod_msa + w * x_norm 
         attn_out = self.attn(x_mod_msa)
 
         attn_out_gate_msa = gate(attn_out, gate_msa)
         attn_out_gate_msa = (1 - w) * attn_out_gate_msa + w * attn_out
         x = x + self.drop_path1(self.ls1(attn_out_gate_msa))
 
-        x = self.norm2(x)
-        x_mod_mlp = modulate(x, shift_mlp, scale_mlp)
-        x_mod_mlp = (1 - w) * x_mod_mlp + w * x
+        x_norm = self.norm2(x)
+        x_mod_mlp = modulate(x_norm, shift_mlp, scale_mlp)
+        x_mod_mlp = (1 - w) * x_mod_mlp + w * x_norm
         mlp_out  = self.mlp(x_mod_mlp)
 
         mlp_out_gate_mlp = gate(mlp_out, gate_mlp)
