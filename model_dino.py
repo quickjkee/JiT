@@ -139,6 +139,7 @@ class BlockWithAdaLN(nn.Module):
             ones  = torch.ones(B, D, device=x.device, dtype=x.dtype)
             shift_msa = zeros; scale_msa = zeros; gate_msa = ones
             shift_mlp = zeros; scale_mlp = zeros; gate_mlp = ones
+            w = 1
         else:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(c).chunk(6, dim=-1)
