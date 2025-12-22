@@ -17,6 +17,7 @@ import torch.utils.checkpoint
 import os, torch, torch.distributed as dist
 
 from util.model_util import RMSNorm
+from math import exp
 from model_jit import JiTBlock, VisionRotaryEmbeddingFast
 import torch.nn.functional as F
 from torchvision.transforms import Normalize
@@ -119,13 +120,13 @@ class BlockWithAdaLN(nn.Module):
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
-    def _weighting_fn(t):
-        def exp(x, k=5):
+    def _weighting_fn(self, t):
+        def exp_(x, k=5):
             return 1 - torch.exp(-k * x)
 
         def curve(x, k=16.1118962790027, a=5.61244287988436):
             x = torch.clip(x, 0, 1)
-            return (1 - torch.exp(-k * x**a)) / (1 - torch.exp(-k)) 
+            return (1 - torch.exp(-k * x**a)) / (1 - exp(-k)) 
 
         w = curve(t)
         return w.unsqueeze(1)
@@ -141,22 +142,25 @@ class BlockWithAdaLN(nn.Module):
         else:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(c).chunk(6, dim=-1)
-
-            # appply weights to adaln params
-            # intuition: Dino works good for less noisy images
-            # shift, scale -> 0; gate -> 1 for clean imgs
             w = self._weighting_fn(weights)
-            gate_msa, gate_mlp = w + (1 - w) * gate_msa, w + (1 - w) * gate_mlp
-            shift_msa, scale_msa = (1 - w) * shift_msa, (1 - w) * scale_msa, 
-            shift_mlp, scale_mlp = (1 - w) * shift_mlp, (1 - w) * scale_mlp, 
 
-        attn_out = self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        attn_out = gate(attn_out, gate_msa)
-        x = x + self.drop_path1(self.ls1(attn_out))
+        x = self.norm1(x)
+        x_mod_msa = modulate(x, shift_msa, scale_msa)
+        x_mod_msa = (1 - w) * x_mod_msa + w * x 
+        attn_out = self.attn(x_mod_msa)
 
-        mlp_out  = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        mlp_out = gate(mlp_out, gate_mlp)
-        x = x + self.drop_path1(self.ls2(mlp_out)) 
+        attn_out_gate_msa = gate(attn_out, gate_msa)
+        attn_out_gate_msa = (1 - w) * attn_out_gate_msa + w * attn_out
+        x = x + self.drop_path1(self.ls1(attn_out_gate_msa))
+
+        x = self.norm2(x)
+        x_mod_mlp = modulate(x, shift_mlp, scale_mlp)
+        x_mod_mlp = (1 - w) * x_mod_mlp + w * x
+        mlp_out  = self.mlp(x_mod_mlp)
+
+        mlp_out_gate_mlp = gate(mlp_out, gate_mlp)
+        mlp_out_gate_mlp = (1 - w) * mlp_out_gate_mlp + w * mlp_out
+        x = x + self.drop_path1(self.ls2(mlp_out_gate_mlp)) 
         
         return x
 
@@ -327,7 +331,7 @@ class DinoJiT(nn.Module):
         x = self.dino_model.prepare_tokens_with_masks(x, None)
         if t is not None or y is not None:
             t_emb = self.t_embedder(t)
-            y_emb = self.y_embedder(y)
+            y_emb = self.y_embedder(y) if y is not None else 0
             c = t_emb + y_emb
         else:
             c = None
