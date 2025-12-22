@@ -119,7 +119,18 @@ class BlockWithAdaLN(nn.Module):
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
-    def forward(self, x, c=None):
+    def _weighting_fn(t):
+        def exp(x, k=5):
+            return 1 - torch.exp(-k * x)
+
+        def curve(x, k=16.1118962790027, a=5.61244287988436):
+            x = torch.clip(x, 0, 1)
+            return (1 - torch.exp(-k * x**a)) / (1 - torch.exp(-k)) 
+
+        w = curve(t)
+        return w.unsqueeze(1)
+
+    def forward(self, x, c=None, weights=None):
         B, N, D = x.shape
 
         if c is None:
@@ -130,6 +141,14 @@ class BlockWithAdaLN(nn.Module):
         else:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(c).chunk(6, dim=-1)
+
+            # appply weights to adaln params
+            # intuition: Dino works good for less noisy images
+            # shift, scale -> 0; gate -> 1 for clean imgs
+            w = self._weighting_fn(weights)
+            gate_msa, gate_mlp = w + (1 - w) * gate_msa, w + (1 - w) * gate_mlp
+            shift_msa, scale_msa = (1 - w) * shift_msa, (1 - w) * scale_msa, 
+            shift_mlp, scale_mlp = (1 - w) * shift_mlp, (1 - w) * scale_mlp, 
 
         attn_out = self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         attn_out = gate(attn_out, gate_msa)
@@ -318,7 +337,7 @@ class DinoJiT(nn.Module):
         # Encoder part
         # -----------------------------------------
         for _, block in enumerate(self.encoder_blocks):
-            x = block(x, t_emb) if self.do_adaln_encoder else block(x)
+            x = block(x, t_emb, weights=t) if self.do_adaln_encoder else block(x)
 
         x = self.dino_model.norm(x)
         cls = x[:, 0] 
