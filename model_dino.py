@@ -325,7 +325,7 @@ class DinoJiT(nn.Module):
         # Start embedding
         # -----------------------------------------
         x = self.dino_model.prepare_tokens_with_masks(x, None)
-        if t is not None and y is not None:
+        if t is not None or y is not None:
             t_emb = self.t_embedder(t)
             y_emb = self.y_embedder(y)
             c = t_emb + y_emb
@@ -344,7 +344,7 @@ class DinoJiT(nn.Module):
         x_mid = x[:, 1 + self.dino_model.num_register_tokens :]
         x = x_mid
 
-        if t is None and y is None:
+        if t is None or y is None:
             return x, cls
         # -----------------------------------------
 
