@@ -255,7 +255,7 @@ def main(args):
             torch.cuda.empty_cache()
             with torch.no_grad():
                 evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
-                evaluate_linear_probing(model_without_ddp.module.net, args)
+            evaluate_linear_probing(model_without_ddp.net, args, device=device)
             torch.cuda.empty_cache()
 
         if misc.is_main_process() and log_writer is not None:

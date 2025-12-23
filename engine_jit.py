@@ -166,8 +166,9 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
     torch.distributed.barrier()
 
 
-def evaluate_linear_probing(model, args):
+def evaluate_linear_probing(model, args, device):
 
+    @torch.no_grad()
     def extract_features(model, loader, device, t = 1.0):
         model.eval()
         feats, labels = [], []
@@ -239,15 +240,15 @@ def evaluate_linear_probing(model, args):
 
     t = [1.0, 0.8, 0.6, 0.4, 0.2]
     for t_ in t:
-        Xtr, Ytr = extract_features(model, train_loader, model.device, t=t_)
-        Xva, Yva = extract_features(model, val_loader, model.device, t=t_)
+        Xtr, Ytr = extract_features(model, train_loader, device, t=t_)
+        Xva, Yva = extract_features(model, val_loader, device, t=t_)
         
         Xtr = F.normalize(Xtr, dim=1)
         Xva = F.normalize(Xva, dim=1)
         num_classes = int(Ytr.max().item() + 1)
         print(f'Num classes {num_classes}, {t_}')
         
-        clf = nn.Linear(Xtr.shape[1], num_classes).to(model.device)
+        clf = nn.Linear(Xtr.shape[1], num_classes).to(device)
         opt = torch.optim.AdamW(clf.parameters(), lr=1e-3, weight_decay=1e-4)
         criterion = nn.CrossEntropyLoss()
         

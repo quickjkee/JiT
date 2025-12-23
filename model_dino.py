@@ -188,6 +188,29 @@ class FinalLayer(nn.Module):
         return x
 
 
+class BottleneckPatchEmbed(nn.Module):
+    """ Image to Patch Embedding
+    """
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, pca_dim=768, embed_dim=768, bias=True):
+        super().__init__()
+        img_size = (img_size, img_size)
+        patch_size = (patch_size, patch_size)
+        num_patches = (img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0])
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+
+        self.proj1 = nn.Conv2d(in_chans, pca_dim, kernel_size=patch_size, stride=patch_size, bias=False)
+        self.proj2 = nn.Conv2d(pca_dim, embed_dim, kernel_size=1, stride=1, bias=bias)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        assert H == self.img_size[0] and W == self.img_size[1], \
+            f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        x = self.proj2(self.proj1(x)).flatten(2).transpose(1, 2)
+        return x
+
+
 class DinoJiT(nn.Module):
     """
     Just image Transformer.
@@ -204,6 +227,7 @@ class DinoJiT(nn.Module):
         depth=12,
         num_heads=16,
         in_context_len=32,
+        bottleneck_dim=128,
         in_context_start=8,
         do_decoder=True,
         do_adaln_encoder=True,
@@ -255,6 +279,10 @@ class DinoJiT(nn.Module):
         )
 
         if self.do_decoder:
+            # linear embed
+            self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, self.out_channels, bottleneck_dim, self.hidden_size, bias=True)
+            num_patches = self.x_embedder.num_patches
+            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, self.hidden_size), requires_grad=False)
             self.decoder_blocks = nn.ModuleList([
                 JiTBlock(self.hidden_size, num_heads, mlp_ratio=mlp_ratio,
                         attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
@@ -312,7 +340,7 @@ class DinoJiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y, do_repa=False):
+    def forward(self, x_in, t, y, do_repa=False):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -321,7 +349,7 @@ class DinoJiT(nn.Module):
         # DINOv2 input specific
         # -----------------------------------------
         x = F.interpolate(
-            x, size=(224, 224), mode="bicubic", align_corners=False
+            x_in, size=(224, 224), mode="bicubic", align_corners=False
         )
         x = (x + 1.0) * 0.5          # [-1,1] → [0,1]
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
@@ -355,6 +383,10 @@ class DinoJiT(nn.Module):
 
         # Decoder part
         # -----------------------------------------
+        x = x_in
+        x = self.x_embedder(x)
+        x += self.pos_embed
+        c = x_mid
         if self.do_decoder:
             for i, block in enumerate(self.decoder_blocks):
                 if self.in_context_len > 0 and i == self.in_context_start:
