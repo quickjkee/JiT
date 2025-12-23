@@ -15,7 +15,7 @@ from util.crop import center_crop_arr
 import util.misc as misc
 
 import copy
-from engine_jit import train_one_epoch, evaluate
+from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
 
 from denoiser import Denoiser
 
@@ -31,8 +31,6 @@ def get_args_parser():
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
     parser.add_argument('--do_decoder', action='store_true',
                         help='whether to use large decoder for DinoJiT setup')
-    parser.add_argument('--do_self_repa', action='store_true',
-                        help='whether to use repa loss on the model (EMA) itself')
     parser.add_argument('--do_adaln_encoder', action='store_true',
                         help='whether to apply adaln layers to encoder for DinoJiT setup')
     parser.add_argument('--repa_coeff', default=0.0, type=float,
@@ -257,6 +255,7 @@ def main(args):
             torch.cuda.empty_cache()
             with torch.no_grad():
                 evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
+                evaluate_linear_probing(model_without_ddp.module.net, args)
             torch.cuda.empty_cache()
 
         if misc.is_main_process() and log_writer is not None:

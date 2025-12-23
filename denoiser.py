@@ -39,19 +39,11 @@ def diffusion_loss(v, v_pred):
     return loss
 
 
-def weighting_fn(t):
-    w = torch.where(t < 0.8, torch.ones_like(t), torch.zeros_like(t))
-    return w.unsqueeze(1)
-
-
 def repa_loss(dino_feats, x_mid, t=None):
     dino_feats = F.normalize(dino_feats, dim=-1) # [B,T,D]
     x_mid = F.normalize(x_mid, dim=-1) # [B,T,D]
     cos_sim = (dino_feats * x_mid).sum(dim=-1)    # [B,T]
-    if t is not None:
-        w = weighting_fn(t)
-        cos_sim = w * cos_sim
-    loss_repa = -cos_sim.mean(dim=(1)).sum() / w.sum()
+    loss_repa = -cos_sim.mean(dim=(1)).mean()
     return loss_repa
 
 
@@ -109,28 +101,21 @@ class Denoiser(nn.Module):
 
     
     @torch.no_grad()
-    def _forward_teacher(self, x, teacher_model=None):
+    def _forward_teacher(self, x):
 
         # If adaln setup, then a teacher (dino) is included into the model
         if self.args.do_adaln_encoder:
             dino_feats, _ = self.net(x, None, None)
 
         # If not adaln setup, then 
-        # Case 1. Teacher (dino) is a separated model (copy)
-        # Case 2. Teacher is the model itself (EMA) but without noisy input
+        # Teacher (dino) is a separated model (copy)
         else:
-            if teacher_model is None:
-                x_dino = F.interpolate(
+            x_dino = F.interpolate(
                         x, size=(224, 224), mode="bicubic", align_corners=False
                     )
-                x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
-                x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
-                dino_feats = self.net_teacher.forward_features(x_dino)["x_norm_patchtokens"]
-            else:
-                trainable = [p for p in teacher_model.parameters() if p.requires_grad]
-                for p in trainable: p.requires_grad_(False)
-                dino_feats, _ = teacher_model.net(x, None, None)
-                for p in trainable: p.requires_grad_(True)
+            x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
+            x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
+            dino_feats = self.net_teacher.forward_features(x_dino)["x_norm_patchtokens"]
 
         return dino_feats
 
@@ -144,7 +129,7 @@ class Denoiser(nn.Module):
         return torch.sigmoid(z)
 
     def forward(self, x, labels, 
-                repa_coeff=0.0, teacher_model=None):
+                repa_coeff=0.0):
         do_repa = repa_coeff > 0.0
 
         labels_dropped = self.drop_labels(labels) if self.training else labels
@@ -155,7 +140,7 @@ class Denoiser(nn.Module):
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
         if do_repa:
-            dino_feats = self._forward_teacher(x, teacher_model)
+            dino_feats = self._forward_teacher(x)
         x_pred = self.net(z, t.flatten(), labels_dropped, do_repa)
 
         # dm loss only

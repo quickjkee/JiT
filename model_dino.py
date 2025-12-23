@@ -124,7 +124,7 @@ class BlockWithAdaLN(nn.Module):
         def exp_(x, k=5):
             return 1 - torch.exp(-k * x)
 
-        def curve(x, k=20.1118962790027, a=7.5):
+        def curve(x, k=16.1118962790027, a=5.61244287988436):
             x = torch.clip(x, 0, 1)
             return (1 - torch.exp(-k * x**a)) / (1 - exp(-k)) 
 
