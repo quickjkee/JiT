@@ -12,6 +12,7 @@ import logging
 
 import numpy as np
 import torch
+from math import exp
 import torch.nn as nn
 import torch.utils.checkpoint
 import os, torch, torch.distributed as dist
@@ -31,12 +32,15 @@ logger = logging.getLogger("dinov3")
 
 
 def modulate(x, shift, scale):
-    x = x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-    return x
+    if len(x.shape) != len(shift.shape):
+        scale, shift = scale.unsqueeze(1), shift.unsqueeze(1)
+    return x * (1 + scale) + shift
 
-def gate(x, gate_):
-    x = gate_.unsqueeze(1) * x
-    return x
+def gate_fn(x, gate):
+    if len(x.shape) != len(gate.shape):
+        gate = gate.unsqueeze(1)
+    return gate * x
+
 
 
 class TimestepEmbedder(nn.Module):
@@ -114,7 +118,18 @@ class BlockWithAdaLN(nn.Module):
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
-    def forward(self, x_list, rope_list, c=None):
+    def _weighting_fn(self, t):
+        def exp_(x, k=5):
+            return 1 - torch.exp(-k * x)
+
+        def curve(x, k=16.1118962790027, a=5.61244287988436):
+            x = torch.clip(x, 0, 1)
+            return (1 - torch.exp(-k * x**a)) / (1 - exp(-k)) 
+
+        w = curve(t)
+        return w.unsqueeze(1).unsqueeze(2)
+
+    def forward(self, x_list, rope_list, c=None, weights=None):
         B, N, D = x_list[0].shape
 
         if c is None:
@@ -122,19 +137,31 @@ class BlockWithAdaLN(nn.Module):
             ones  = torch.ones(B, D, device=x_list[0].device, dtype=x_list[0].dtype)
             shift_msa = zeros; scale_msa = zeros; gate_msa = ones
             shift_mlp = zeros; scale_mlp = zeros; gate_mlp = ones
+            w = 1
         else:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(c).chunk(6, dim=-1)
+            w = self._weighting_fn(weights)
 
         x_out = []
         for x, rope in zip(x_list, rope_list):
-            attn_out = self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=rope)
-            attn_out = gate(attn_out, gate_msa)
-            x = x + self.ls1(attn_out)
-
-            mlp_out = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-            mlp_out = gate(mlp_out, gate_mlp)
-            x = x + self.ls2(mlp_out)
+            x_norm = self.norm1(x)
+            x_mod_msa = modulate(x_norm, shift_msa, scale_msa)
+            x_mod_msa = (1 - w) * x_mod_msa + w * x_norm 
+            attn_out = self.attn(x_mod_msa, rope=rope)
+    
+            attn_out_gate_msa = gate_fn(attn_out, gate_msa)
+            attn_out_gate_msa = (1 - w) * attn_out_gate_msa + w * attn_out
+            x = x + self.ls1(attn_out_gate_msa)
+    
+            x_norm = self.norm2(x)
+            x_mod_mlp = modulate(x_norm, shift_mlp, scale_mlp)
+            x_mod_mlp = (1 - w) * x_mod_mlp + w * x_norm
+            mlp_out  = self.mlp(x_mod_mlp)
+    
+            mlp_out_gate_mlp = gate_fn(mlp_out, gate_mlp)
+            mlp_out_gate_mlp = (1 - w) * mlp_out_gate_mlp + w * mlp_out
+            x = x + self.ls2(mlp_out_gate_mlp)
             x_out.append(x)
         x = x_out
         
@@ -157,7 +184,7 @@ class FinalLayer(nn.Module):
 
     #@torch.compile
     def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
+        shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
@@ -181,11 +208,14 @@ class DINOv3JiT(nn.Module):
         in_context_len=32,
         in_context_start=8,
         do_decoder=True,
+        do_adaln_encoder=True,
+        do_repa=True
     ):
         super().__init__()
 
         # Encoder part
         # -----------------------------------------
+        self.do_adaln_encoder = do_adaln_encoder
         self.dino_model = dino_model
         self.dino_model.requires_grad_(False)
         self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, dino_model.embed_dim, dino_model.embed_dim) for b in self.dino_model.blocks])
@@ -300,21 +330,22 @@ class DINOv3JiT(nn.Module):
 
         # Start embedding
         # -----------------------------------------
-        if t is not None and y is not None:
+        if t is not None or y is not None:
             t_emb = self.t_embedder(t)
-            y_emb = self.y_embedder(y)
+            y_emb = self.y_embedder(y) if y is not None else 0
             c = t_emb + y_emb
         else:
             c = None
-        x, rope = self.dino_model.prepare_tokens_with_masks(x, None)
-        x, rope = [x], [rope]
+            t_emb = None
+        x_in, rope = self.dino_model.prepare_tokens_with_masks(x, None)
+        x, rope = [x_in], [rope]
         # -----------------------------------------
 
         # Encoder part
         # -----------------------------------------
         for _, block in enumerate(self.encoder_blocks):
             rope_sincos = [self.dino_model.rope_embed(H=H, W=W) for H, W in rope]
-            x = block(x, rope_sincos, c)
+            x = block(x, rope_sincos, t_emb, weights=t) if self.do_adaln_encoder else block(x)
 
         x = x[0]
         x = self.dino_model.norm(x)
@@ -323,22 +354,28 @@ class DINOv3JiT(nn.Module):
         x_mid = x[:, self.dino_model.n_storage_tokens + 1 :]
         x = x_mid
 
-        if t is None and y is None:
+        if t is None or y is None:
             return x, cls
         # -----------------------------------------
 
         # Decoder part
         # -----------------------------------------
+        x = x_in[:, self.dino_model.n_storage_tokens + 1 :]
+        c = x_mid
         if self.do_decoder:
             for i, block in enumerate(self.decoder_blocks):
                 if self.in_context_len > 0 and i == self.in_context_start:
                     in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                     in_context_tokens += self.in_context_posemb
                     x = torch.cat([in_context_tokens, x], dim=1)
+
+                    in_context_tokens_t = t_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                    in_context_tokens_t += self.in_context_posemb
+                    c = torch.cat([in_context_tokens_t, x_mid], dim=1)
                 x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
             x = x[:, self.in_context_len:]
 
-        x = self.unpatchify(self.final_layer(x, c), self.patch_size)
+        x = self.unpatchify(self.final_layer(x, x_mid), self.patch_size)
         output = x if not do_repa else (x, x_mid)
         # -----------------------------------------
 
@@ -346,12 +383,12 @@ class DINOv3JiT(nn.Module):
 
 
 # TODO
-def DINOv3JiT_B_16(**kwargs):
+def DINOv3JiT_B_16(model_path='models/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth', **kwargs):
     REPO_DIR = 'dinov3'
     dinov2_vitb14 = torch.hub.load(REPO_DIR, 'dinov3_vitb16', 
                                source='local', 
-                               weights='models/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth')
-    return DINOv3JiT(dino_model=dinov2_vitb14, depth=12, num_heads=12,
+                               weights=model_path)
+    return DINOv3JiT(dino_model=dinov2_vitb14, depth=8, num_heads=12,
                    in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
 
 

@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from math import exp
 from model_jit import JiT_models
 from model_dino import DinoJiT_models
+from model_dinov3 import DINOv3JiT_models
 from torchvision.transforms import Normalize
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
@@ -55,14 +56,15 @@ class Denoiser(nn.Module):
         super().__init__()
 
         if 'Dino' in args.model:
-            self.net = DinoJiT_models[args.model](
+            self.net = DINOv3JiT_models[args.model](
                 num_classes=args.class_num,
                 input_size=args.img_size,
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
                 do_decoder=args.do_decoder,
                 do_adaln_encoder=args.do_adaln_encoder,
-                do_repa=args.repa_coeff > 0.0
+                do_repa=args.repa_coeff > 0.0,
+                model_path=args.model_path
             )
             if not args.do_adaln_encoder:
                 self.net_teacher = copy.deepcopy(self.net.dino_model).eval()

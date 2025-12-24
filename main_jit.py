@@ -35,6 +35,8 @@ def get_args_parser():
                         help='whether to apply adaln layers to encoder for DinoJiT setup')
     parser.add_argument('--repa_coeff', default=0.0, type=float,
                         help='Coefficient for REPA loss')
+    parser.add_argument('--model_path', type=str,
+                        help='Path to DINOv3')
 
     # training
     parser.add_argument('--epochs', default=200, type=int)

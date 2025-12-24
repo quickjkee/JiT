@@ -204,8 +204,8 @@ class JiTBlock(nn.Module):
     #@torch.compile
     def forward(self, x,  c, feat_rope=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        x = x + gate_fn(gate_msa, self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope))
-        x = x + gate_fn(gate_mlp, self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp)))
+        x = x + gate_fn(self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope), gate_msa)
+        x = x + gate_fn(self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp)), gate_mlp)
         return x
 
 
