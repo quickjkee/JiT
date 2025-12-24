@@ -233,6 +233,7 @@ class DinoJiT(nn.Module):
         in_context_start=8,
         do_decoder=True,
         do_adaln_encoder=True,
+        do_repa=True
     ):
         super().__init__()
 
@@ -248,6 +249,7 @@ class DinoJiT(nn.Module):
         self.out_channels = 3
         self.do_decoder = do_decoder
         self.do_adaln_encoder = do_adaln_encoder
+        self.do_repa = do_repa
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
@@ -293,6 +295,15 @@ class DinoJiT(nn.Module):
             ])
 
         self.final_layer = FinalLayer(self.hidden_size, patch_size, self.out_channels)
+
+        if self.do_repa:
+            self.projector = nn.Sequential(
+                nn.Linear(self.hidden_size, 2048),
+                nn.SiLU(),
+                nn.Linear(2048, 2048),
+                nn.SiLU(),
+                nn.Linear(2048, self.hidden_size),
+            )
 
         self.initialize_weights()
 
@@ -403,6 +414,10 @@ class DinoJiT(nn.Module):
             x = x[:, self.in_context_len:]
 
         x = self.unpatchify(self.final_layer(x, x_mid), self.patch_size)
+
+        if do_repa:
+            N, T, D = x_mid.shape
+            x_mid = self.projector(x_mid.reshape(-1, D)).reshape(N, T, -1)
         output = x if not do_repa else (x, x_mid)
         # -----------------------------------------
 

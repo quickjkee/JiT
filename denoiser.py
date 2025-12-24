@@ -61,7 +61,8 @@ class Denoiser(nn.Module):
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
                 do_decoder=args.do_decoder,
-                do_adaln_encoder=args.do_adaln_encoder
+                do_adaln_encoder=args.do_adaln_encoder,
+                do_repa=args.repa_coeff > 0.0
             )
             if not args.do_adaln_encoder:
                 self.net_teacher = copy.deepcopy(self.net.dino_model).eval()
