@@ -257,7 +257,7 @@ class DinoJiT(nn.Module):
             self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
         else:
             self.encoder_blocks = self.dino_model.blocks
-            for block in dino_model.blocks[-2:]:
+            for block in dino_model.blocks[-6:]:
                 for p in block.parameters():
                     p.requires_grad = True
             self.dino_model.norm.requires_grad_(True)
