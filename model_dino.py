@@ -379,7 +379,7 @@ class DinoJiT(nn.Module):
 
         if t is not None and y is not None:
             x_in[:, 0] += y_emb
-            x_in[:, 1 : self.num_register_tokens + 1] += t_emb.unsqueeze(1)
+            x_in[:, 1 : self.dino_model.num_register_tokens + 1] += t_emb.unsqueeze(1)
         # -----------------------------------------
 
         # Encoder part
