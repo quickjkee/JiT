@@ -145,7 +145,7 @@ class BlockWithAdaLN(nn.Module):
         else:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(c).chunk(6, dim=-1)
-            w = self._weighting_fn(weights)
+            w = self._weighting_fn(weights) if weights is not None else 1
 
         x_norm = self.norm1(x)
         x_mod_msa = modulate(x_norm, shift_msa, scale_msa)
@@ -265,21 +265,16 @@ class DinoJiT(nn.Module):
             self.dino_model.norm.requires_grad_(True)
 
         # in-context cls token
-        if self.in_context_len > 0 and self.do_decoder:
-            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, self.hidden_size), requires_grad=True)
-            torch.nn.init.normal_(self.in_context_posemb, std=.02)
+        #if self.in_context_len > 0 and self.do_decoder:
+        #    self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, self.hidden_size), requires_grad=True)
+        #    torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
         half_head_dim = self.hidden_size // num_heads // 2
         hw_seq_len = self.input_size // self.patch_size
-        self.feat_rope = VisionRotaryEmbeddingFast(
-            dim=half_head_dim,
-            pt_seq_len=hw_seq_len,
-            num_cls_token=0
-        )
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=in_context_len
+            num_cls_token=1 + self.dino_model.num_register_tokens
         )
 
         if self.do_decoder:
@@ -353,7 +348,7 @@ class DinoJiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x_in, t, y, do_repa=False):
+    def forward(self, x, t, y, do_repa=False):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -362,7 +357,7 @@ class DinoJiT(nn.Module):
         # DINOv2 input specific
         # -----------------------------------------
         x = F.interpolate(
-            x_in, size=(224, 224), mode="bicubic", align_corners=False
+            x, size=(224, 224), mode="bicubic", align_corners=False
         )
         x = (x + 1.0) * 0.5          # [-1,1] → [0,1]
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
@@ -370,53 +365,48 @@ class DinoJiT(nn.Module):
 
         # Start embedding
         # -----------------------------------------
-        x = self.dino_model.prepare_tokens_with_masks(x, None)
-        if t is not None or y is not None:
+        x_in = self.dino_model.prepare_tokens_with_masks(x, None)
+
+        if t is not None and y is not None:
             t_emb = self.t_embedder(t)
-            y_emb = self.y_embedder(y) if y is not None else 0
+            y_emb = self.y_embedder(y)
             c = t_emb + y_emb
-        else:
+        elif t is None and y is None:
             c = None
             t_emb = None
+        else:
+            print('Wrong combination of t, y')
+
+        if t is not None and y is not None:
+            x_in[:, 0] += y_emb
+            x_in[:, 1 : self.num_register_tokens + 1] += t_emb.unsqueeze(1)
         # -----------------------------------------
 
         # Encoder part
         # -----------------------------------------
+        x = x_in
         for _, block in enumerate(self.encoder_blocks):
-            x = block(x, t_emb, weights=t) if self.do_adaln_encoder else block(x)
-
+            x = block(x, t_emb, weights=None) if self.do_adaln_encoder else block(x)
         x = self.dino_model.norm(x)
-        cls = x[:, 0] 
-        x_mid = x[:, 1 + self.dino_model.num_register_tokens :]
-        x = x_mid
 
-        if t is None or y is None:
-            return x, cls
+        if t is None and y is None:
+            return x[:, 1 + self.dino_model.num_register_tokens :], x[:, 0] 
         # -----------------------------------------
 
         # Decoder part
         # -----------------------------------------
+        x_mid = x
         x = x_in
-        x = self.x_embedder(x)
-        x += self.pos_embed
-        c = x_mid
         if self.do_decoder:
-            for i, block in enumerate(self.decoder_blocks):
-                if self.in_context_len > 0 and i == self.in_context_start:
-                    in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                    in_context_tokens += self.in_context_posemb
-                    x = torch.cat([in_context_tokens, x], dim=1)
-                    
-                    in_context_tokens_t = t_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                    in_context_tokens_t += self.in_context_posemb
-                    c = torch.cat([in_context_tokens_t, x_mid], dim=1)
-                x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
-            x = x[:, self.in_context_len:]
+            for _, block in enumerate(self.decoder_blocks):
+                x = block(x, x_mid, self.feat_rope_incontext)
+            x = x[:, 1 + self.dino_model.num_register_tokens :]
 
-        x = self.unpatchify(self.final_layer(x, x_mid), self.patch_size)
+        x = self.unpatchify(self.final_layer(x, c), self.patch_size)
 
         if do_repa:
-            N, T, D = x_mid.shape
+            x_mid = x_mid[:, 1 + self.dino_model.num_register_tokens :]
+            N, T, D = x_mid
             x_mid = self.projector(x_mid.reshape(-1, D)).reshape(N, T, -1)
         output = x if not do_repa else (x, x_mid)
         # -----------------------------------------

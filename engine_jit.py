@@ -175,7 +175,7 @@ def evaluate_linear_probing(model, args, device):
 
         for x, y in tqdm(loader):
             x = x.to(device, dtype=torch.float32)
-            y = y.to(device)
+            y = y.to(device, non_blocking=True)
             x = x / 255.
             x = x * 2.0 - 1.0
 
@@ -183,7 +183,7 @@ def evaluate_linear_probing(model, args, device):
             z = t * x + (1 - t) * e
             t_ = torch.tensor([t]).repeat(x.size(0)).flatten().cuda()
 
-            _, cls_ = model(z, t=t_, y=None) 
+            _, cls_ = model(z, t=t_, y=y) 
             cls = F.normalize(cls_, dim=1)
 
             feats.append(cls)
