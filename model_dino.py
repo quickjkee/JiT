@@ -386,7 +386,7 @@ class DinoJiT(nn.Module):
         # -----------------------------------------
         x = x_in
         for _, block in enumerate(self.encoder_blocks):
-            x = block(x, t_emb, weights=None) if self.do_adaln_encoder else block(x)
+            x = block(x, c, weights=None) if self.do_adaln_encoder else block(x)
         x = self.dino_model.norm(x)
 
         if t is None and y is None:
@@ -401,13 +401,13 @@ class DinoJiT(nn.Module):
             for _, block in enumerate(self.decoder_blocks):
                 x = block(x, x_mid, self.feat_rope_incontext)
             x = x[:, 1 + self.dino_model.num_register_tokens :]
-
         x = self.unpatchify(self.final_layer(x, c), self.patch_size)
 
         if do_repa:
             x_mid = x_mid[:, 1 + self.dino_model.num_register_tokens :]
             N, T, D = x_mid.shape
             x_mid = self.projector(x_mid.reshape(-1, D)).reshape(N, T, -1)
+
         output = x if not do_repa else (x, x_mid)
         # -----------------------------------------
 
