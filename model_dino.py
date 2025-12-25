@@ -348,7 +348,7 @@ class DinoJiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y, do_repa=False):
+    def forward(self, x, t, y, do_repa=False, drop_mid=False):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -389,7 +389,7 @@ class DinoJiT(nn.Module):
             x = block(x, c, weights=None) if self.do_adaln_encoder else block(x)
         x = self.dino_model.norm(x)
 
-        if t is None and y is None:
+        if (t is None and y is None) or drop_mid:
             return x[:, 1 + self.dino_model.num_register_tokens :], x[:, 0] 
         # -----------------------------------------
 

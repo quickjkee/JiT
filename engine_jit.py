@@ -183,7 +183,7 @@ def evaluate_linear_probing(model, args, device):
             z = t * x + (1 - t) * e
             t_ = torch.tensor([t]).repeat(x.size(0)).flatten().cuda()
 
-            _, cls_ = model(z, t=t_, y=y) 
+            _, cls_ = model(z, t=t_, y=y, drop_mid=True) 
             cls = F.normalize(cls_, dim=1)
 
             feats.append(cls)
