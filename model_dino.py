@@ -145,7 +145,7 @@ class BlockWithAdaLN(nn.Module):
         else:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(c).chunk(6, dim=-1)
-            w = self._weighting_fn(weights) if weights is not None else 1
+            w = self._weighting_fn(weights) if weights is not None else 0
 
         x_norm = self.norm1(x)
         x_mod_msa = modulate(x_norm, shift_msa, scale_msa)
