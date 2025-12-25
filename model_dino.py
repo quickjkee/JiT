@@ -279,9 +279,9 @@ class DinoJiT(nn.Module):
 
         if self.do_decoder:
             # linear embed
-            self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, self.out_channels, bottleneck_dim, self.hidden_size, bias=True)
-            num_patches = self.x_embedder.num_patches
-            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, self.hidden_size), requires_grad=False)
+            #self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, self.out_channels, bottleneck_dim, self.hidden_size, bias=True)
+            #num_patches = self.x_embedder.num_patches
+            #self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, self.hidden_size), requires_grad=False)
             self.decoder_blocks = nn.ModuleList([
                 JiTBlock(self.hidden_size, num_heads, mlp_ratio=mlp_ratio,
                         attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
@@ -406,7 +406,7 @@ class DinoJiT(nn.Module):
 
         if do_repa:
             x_mid = x_mid[:, 1 + self.dino_model.num_register_tokens :]
-            N, T, D = x_mid
+            N, T, D = x_mid.shape
             x_mid = self.projector(x_mid.reshape(-1, D)).reshape(N, T, -1)
         output = x if not do_repa else (x, x_mid)
         # -----------------------------------------
@@ -415,7 +415,7 @@ class DinoJiT(nn.Module):
 
 
 def DinoJiT_B_16(**kwargs):
-    dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14", trust_repo=True, force_reload=False)
+    dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", trust_repo=True, force_reload=False)
     return DinoJiT(dino_model=dinov2_vitb14, depth=8, num_heads=12,
                    in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
 
