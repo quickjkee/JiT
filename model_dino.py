@@ -11,6 +11,7 @@ import math
 import logging
 
 import numpy as np
+import copy
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
@@ -21,6 +22,7 @@ from math import exp
 from model_jit import JiTBlock, VisionRotaryEmbeddingFast
 import torch.nn.functional as F
 from torchvision.transforms import Normalize
+from collections import OrderedDict
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 logger = logging.getLogger("dinov2")
@@ -145,7 +147,7 @@ class BlockWithAdaLN(nn.Module):
         else:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(c).chunk(6, dim=-1)
-            w = self._weighting_fn(weights) if weights is not None else 0
+            w = self._weighting_fn(weights)
 
         x_norm = self.norm1(x)
         x_mod_msa = modulate(x_norm, shift_msa, scale_msa)
@@ -264,11 +266,6 @@ class DinoJiT(nn.Module):
                     p.requires_grad = True
             self.dino_model.norm.requires_grad_(True)
 
-        # in-context cls token
-        #if self.in_context_len > 0 and self.do_decoder:
-        #    self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, self.hidden_size), requires_grad=True)
-        #    torch.nn.init.normal_(self.in_context_posemb, std=.02)
-
         half_head_dim = self.hidden_size // num_heads // 2
         hw_seq_len = self.input_size // self.patch_size
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
@@ -278,10 +275,6 @@ class DinoJiT(nn.Module):
         )
 
         if self.do_decoder:
-            # linear embed
-            #self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, self.out_channels, bottleneck_dim, self.hidden_size, bias=True)
-            #num_patches = self.x_embedder.num_patches
-            #self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, self.hidden_size), requires_grad=False)
             self.decoder_blocks = nn.ModuleList([
                 JiTBlock(self.hidden_size, num_heads, mlp_ratio=mlp_ratio,
                         attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
@@ -290,16 +283,7 @@ class DinoJiT(nn.Module):
             ])
 
         self.final_layer = FinalLayer(self.hidden_size, patch_size, self.out_channels)
-
-        if self.do_repa:
-            self.projector = nn.Sequential(
-                nn.Linear(self.hidden_size, 2048),
-                nn.SiLU(),
-                nn.Linear(2048, 2048),
-                nn.SiLU(),
-                nn.Linear(2048, self.hidden_size),
-            )
-
+        
         self.initialize_weights()
 
 
@@ -376,17 +360,13 @@ class DinoJiT(nn.Module):
             t_emb = None
         else:
             print('Wrong combination of t, y')
-
-        if t is not None and y is not None:
-            x_in[:, 0] += y_emb
-            x_in[:, 1 : self.dino_model.num_register_tokens + 1] += t_emb.unsqueeze(1)
         # -----------------------------------------
 
         # Encoder part
         # -----------------------------------------
         x = x_in
         for _, block in enumerate(self.encoder_blocks):
-            x = block(x, c, weights=None) if self.do_adaln_encoder else block(x)
+            x = block(x, t_emb, weights=t) if self.do_adaln_encoder else block(x)
         x = self.dino_model.norm(x)
 
         if (t is None and y is None) or drop_mid:
@@ -395,18 +375,17 @@ class DinoJiT(nn.Module):
 
         # Decoder part
         # -----------------------------------------
-        x_mid = x
+        x_mid = x.clone()
         x = x_in
         if self.do_decoder:
             for _, block in enumerate(self.decoder_blocks):
-                x = block(x, x_mid, self.feat_rope_incontext)
-            x = x[:, 1 + self.dino_model.num_register_tokens :]
+                x = block(x, c, feat_rope=self.feat_rope_incontext, context=x_mid)
         x = self.unpatchify(self.final_layer(x, c), self.patch_size)
 
         if do_repa:
             x_mid = x_mid[:, 1 + self.dino_model.num_register_tokens :]
             N, T, D = x_mid.shape
-            x_mid = self.projector(x_mid.reshape(-1, D)).reshape(N, T, -1)
+            x_mid = x_mid
 
         output = x if not do_repa else (x, x_mid)
         # -----------------------------------------
@@ -414,10 +393,26 @@ class DinoJiT(nn.Module):
         return output
 
 
-def DinoJiT_B_16(**kwargs):
+def load_checkpoint(model, path):
+    state_dict = torch.load(path, map_location="cpu", weights_only=False)
+    old_state_dict = state_dict["model"]  # or whatever key holds it
+    
+    new_state_dict = OrderedDict()
+    for k, v in old_state_dict.items():
+        if k.startswith("net."):
+            k = k[len("net."):]
+        new_state_dict[k] = v
+    model.load_state_dict(new_state_dict, strict=False)
+    print('loaded')
+    return model
+    
+
+def DinoJiT_B_16(model_path='../checkpoint_dino/checkpoint-last.pth', **kwargs):
     dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", trust_repo=True, force_reload=False)
-    return DinoJiT(dino_model=dinov2_vitb14, depth=8, num_heads=12,
+    dinojit = DinoJiT(dino_model=dinov2_vitb14, depth=8, num_heads=12,
                    in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
+    dinojit = load_checkpoint(dinojit, model_path)
+    return dinojit
 
 
 DinoJiT_models = {

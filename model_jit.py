@@ -120,30 +120,53 @@ class Attention(nn.Module):
         self.q_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
         self.k_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, rope):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
-
+    def forward(self, x, rope, context):
+        # x: (B, Nq, C), context: (B, Nk, C)
+        B, Nq, C = x.shape
+        _, Nk, _ = context.shape
+        H = self.num_heads
+        D = C // H
+        
+        # q from x
+        q = self.q(x).reshape(B, Nq, H, D).permute(0, 2, 1, 3)  # (B,H,Nq,D)
+        
+        # k,v from x
+        kv_x = self.kv(x).reshape(B, Nq, 2, H, D).permute(2, 0, 3, 1, 4)
+        k_x, v_x = kv_x[0], kv_x[1]                              # (B,H,Nq,D)
+        
+        # k,v from context
+        kv_c = self.kv(context).reshape(B, Nk, 2, H, D).permute(2, 0, 3, 1, 4)
+        k_c, v_c = kv_c[0], kv_c[1]                              # (B,H,Nk,D)
+        
         q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        q = rope(q)
-        k = rope(k)
-
-        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
-
-        x = x.transpose(1, 2).reshape(B, N, C)
-
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
+        k_x = self.k_norm(k_x)
+        k_c = self.k_norm(k_c)
+        
+        # ✅ RoPE separately per stream (VERY important for VisionRotaryEmbeddingFast)
+        if rope is not None:
+            q   = rope(q)
+            k_x = rope(k_x)
+            k_c = rope(k_c)
+        
+        # concat kv (x self + cross)
+        k = torch.cat([k_x, k_c], dim=2)                         # (B,H,Nq+Nk,D)
+        v = torch.cat([v_x, v_c], dim=2)
+        
+        out = scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.attn_drop.p if self.training else 0.0
+        )  # (B,H,Nq,D)
+        
+        out = out.transpose(1, 2).reshape(B, Nq, C)
+        out = self.proj(out)
+        out = self.proj_drop(out)
+        return out
 
 class SwiGLUFFN(nn.Module):
     def __init__(
@@ -202,9 +225,11 @@ class JiTBlock(nn.Module):
         )
 
     #@torch.compile
-    def forward(self, x,  c, feat_rope=None):
+    def forward(self, x,  c, feat_rope=None, context=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        x = x + gate_fn(self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope), gate_msa)
+        x = x + gate_fn(self.attn(x=modulate(self.norm1(x), shift_msa, scale_msa), 
+                                  rope=feat_rope, context=context), 
+                        gate_msa)
         x = x + gate_fn(self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp)), gate_mlp)
         return x
 
