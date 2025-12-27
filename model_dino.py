@@ -380,7 +380,7 @@ class DinoJiT(nn.Module):
         if self.do_decoder:
             for _, block in enumerate(self.decoder_blocks):
                 x = block(x, c, feat_rope=self.feat_rope_incontext, context=x_mid)
-        x = self.unpatchify(self.final_layer(x, c), self.patch_size)
+        x = self.unpatchify(self.final_layer(x[:, 1 + self.dino_model.num_register_tokens :], c), self.patch_size)
 
         if do_repa:
             x_mid = x_mid[:, 1 + self.dino_model.num_register_tokens :]
