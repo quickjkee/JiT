@@ -1,5 +1,6 @@
 from ast import arg
 import torch
+import copy
 import torch.nn as nn
 from math import exp
 from model_jit import JiT_models
@@ -27,9 +28,8 @@ def print_trainable(model):
     print(f"Total params:     {total:,}")
     print(f"Trainable ratio:  {100 * trainable / total:.2f}%")
 
-
-def diffusion_loss(v, v_pred):
-    loss = (v - v_pred) ** 2
+def mse_loss(pred, target):
+    loss = (pred - target) ** 2
     loss = loss.mean(dim=(1, 2, 3)).mean()
     return loss
 
@@ -47,6 +47,8 @@ class MCD(nn.Module):
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
             )
+        self.net_teacher = copy.deepcopy(self.net).eval()
+        self.net_teacher.requires_grad_(False)
         print_trainable(self.net)
 
         self.img_size = args.img_size
@@ -71,26 +73,53 @@ class MCD(nn.Module):
         self.cfg_scale = args.cfg
         self.cfg_interval = (args.interval_min, args.interval_max)
 
+        # distillation hyper params
+        self.timesteps = torch.linspace(0.0, 1.0, self.steps+1)
+        self.timesteps_end = self.timesteps[1:]
+        self.timesteps_start = self.timesteps[:-1]
+        intervals = torch.chunk(self.timesteps, args.num_boundaries)
+        self.boundaries = torch.tensor(
+                        [interval[0] for interval in intervals] + [intervals[-1][-1]]
+                    )
+
+
     def drop_labels(self, labels):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
         out = torch.where(drop, torch.full_like(labels, self.num_classes), labels)
         return out
 
-    def sample_t(self, n: int, device=None):
-        z = torch.randn(n, device=device) * self.P_std + self.P_mean
-        return torch.sigmoid(z)
+    def sample_discrete_t_start(self, n, device):
+        z = torch.randn(n, device=device) * 0.8 - 0.8
+        t = torch.sigmoid(z)
+        idx = torch.bucketize(t, self.timesteps_start)
+        idx = (idx - 1).clamp(0, self.timesteps_start.numel() - 1)
+        return self.timesteps_start[idx], idx
 
     def forward(self, x, labels):
-        labels_dropped = self.drop_labels(labels) if self.training else labels
-        t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
+        t_start, idx = self.sample_discrete_t_start(x.size(0), device=x.device)
+        t_next = self.timesteps_end[idx]
+        t_start, t_next = t_start.view(-1, *([1] * (x.ndim - 1))), t_next.view(-1, *([1] * (x.ndim - 1)))
+
         e = torch.randn_like(x) * self.noise_scale
+        z_start = t_start * x + (1 - t_start) * e
+        z_next = self._heun_step(z_start, 
+                                 t_start, 
+                                 t_next, 
+                                 labels, model=self.net_teacher)
 
-        z = t * x + (1 - t) * e
-        v = (x - z) / (1 - t).clamp_min(self.t_eps)
+        x0_start = self.net(z_start, t_start.flatten(), labels)
+        v_start = (x0_start - z_start) / (1.0 - t_start).clamp_min(self.t_eps)
+        f_start = z_start + (t_next - t_start) * v_start
 
-        x_pred = self.net(z, t.flatten(), labels_dropped)
-        v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-        loss = diffusion_loss(v, v_pred)
+        with torch.no_grad():
+            idx = torch.searchsorted(self.boundaries.view(-1, *([1] * (x.ndim - 1))), t_next, right=False).clamp(max=self.boundaries.numel()-1)
+            t_boundary = self.boundaries.view(-1, *([1] * (x.ndim - 1)))[idx]
+
+            x0_next = self.net(z_next, t_next.flatten(), labels)
+            v_next = (x0_next - z_next) / (1.0 - t_next).clamp_min(self.t_eps)
+            f_next = z_next + (t_boundary - t_next) * v_next
+
+        loss = mse_loss(f_start, f_next)
 
         return loss
 
@@ -99,32 +128,30 @@ class MCD(nn.Module):
         device = labels.device
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
-        timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
-
-        if self.method == "euler":
-            stepper = self._euler_step
-        elif self.method == "heun":
-            stepper = self._heun_step
-        else:
-            raise NotImplementedError
+        timesteps = self.boundaries.view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
+        size = len(timesteps)
 
         # ode
-        for i in range(self.steps - 1):
+        for i in range(size - 1):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            z = stepper(z, t, t_next, labels)
-        # last step euler
-        z = self._euler_step(z, timesteps[-2], timesteps[-1], labels)
+            x0 = self.net(z, t.flatten(), labels)
+            v = (x0 - z) / (1.0 - t).clamp_min(self.t_eps)
+            z = z + (t_next - t) * v
+            
         return z
 
     @torch.no_grad()
-    def _forward_sample(self, z, t, labels):
+    def _forward_sample(self, z, t, labels, model):
+        if model is None:
+            model = self.net
+
         # conditional
-        x_cond = self.net(z, t.flatten(), labels)
+        x_cond = model(z, t.flatten(), labels)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes))
+        x_uncond = model(z, t.flatten(), torch.full_like(labels, self.num_classes))
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
@@ -135,17 +162,17 @@ class MCD(nn.Module):
         return v_uncond + cfg_scale_interval * (v_cond - v_uncond)
 
     @torch.no_grad()
-    def _euler_step(self, z, t, t_next, labels):
-        v_pred = self._forward_sample(z, t, labels)
+    def _euler_step(self, z, t, t_next, labels, model=None):
+        v_pred = self._forward_sample(z, t, labels, model)
         z_next = z + (t_next - t) * v_pred
         return z_next
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, labels):
-        v_pred_t = self._forward_sample(z, t, labels)
+    def _heun_step(self, z, t, t_next, labels, model=None):
+        v_pred_t = self._forward_sample(z, t, labels, model)
 
         z_next_euler = z + (t_next - t) * v_pred_t
-        v_pred_t_next = self._forward_sample(z_next_euler, t_next, labels)
+        v_pred_t_next = self._forward_sample(z_next_euler, t_next, labels, model)
 
         v_pred = 0.5 * (v_pred_t + v_pred_t_next)
         z_next = z + (t_next - t) * v_pred
