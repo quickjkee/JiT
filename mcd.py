@@ -83,13 +83,14 @@ class MCD(nn.Module):
                     )
 
     def sample_discrete_t_start(self, n, device):
+        timesteps_start = self.timesteps_start.to(device)
         idx = torch.randint(
             low=0,
-            high=self.timesteps_start.numel(),
+            high=timesteps_start.numel(),
             size=(n,),
             device=device
         )
-        return self.timesteps_start[idx], idx
+        return timesteps_start[idx], idx
 
     def forward(self, x, labels):
         t_start, idx = self.sample_discrete_t_start(x.size(0), device=x.device)
