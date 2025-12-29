@@ -33,7 +33,7 @@ def get_args_parser():
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
     parser.add_argument('--path_to_pretrained_dm', type=str, help='Path to pretrained teacher (diffusion model)')
     parser.add_argument('--num_boundaries', default=10, type=int, help='Number of boundaries for MCD')
-    parser.add_argument('--do_x0', action='store_false')
+    parser.add_argument('--do_x0', action='store_true')
 
     # training
     parser.add_argument('--epochs', default=200, type=int)
@@ -191,6 +191,7 @@ def main(args):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         model.load_state_dict(checkpoint['model'], strict=False)
         print("Resumed checkpoint from", args.resume)
+    model.create_teacher()
 
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     model_without_ddp = model.module

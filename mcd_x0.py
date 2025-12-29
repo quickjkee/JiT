@@ -48,8 +48,6 @@ class MCD_x0(nn.Module):
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
             )
-        self.net_teacher = copy.deepcopy(self.net).eval()
-        self.net_teacher.requires_grad_(False)
         print_trainable(self.net)
 
         self.img_size = args.img_size
@@ -83,14 +81,19 @@ class MCD_x0(nn.Module):
                         [interval[0] for interval in intervals] + [intervals[-1][-1]]
                     )
 
+    def create_teacher(self):
+        self.net_teacher = copy.deepcopy(self.net).eval()
+        self.net_teacher.requires_grad_(False)
+
     def sample_discrete_t_start(self, n, device):
+        timesteps_start = self.timesteps_start.to(device)
         idx = torch.randint(
             low=0,
-            high=self.timesteps_start.numel(),
+            high=timesteps_start.numel(),
             size=(n,),
             device=device
         )
-        return self.timesteps_start[idx], idx
+        return timesteps_start[idx], idx
 
     def forward(self, x, labels):
         # Timesteps
@@ -118,11 +121,11 @@ class MCD_x0(nn.Module):
 
         # Target
         with torch.no_grad():
-            v_pred_next = self._forward_sample(z_next, t_next.flatten(), labels, self.net_teacher)
+            v_pred_next = self._forward_sample(z_next, t_next, labels, self.net_teacher)
             x0_pred_next = z_next + v_pred_next * (1 - t_next)
             x0_boundary_target = self.net(x0_pred_next, t_next.flatten(), labels)
 
-            boundary_mask = (t_next == t_boundary)  # shape like t_next (broadcastable)
+            boundary_mask = (t_next == t_boundary)
             x0_boundary_target = torch.where(boundary_mask, x0_pred_next, x0_boundary_target)
 
         loss = mse_loss(x0_boundary_pred, x0_boundary_target)
@@ -144,7 +147,7 @@ class MCD_x0(nn.Module):
                 z = v_teacher_start * (1 - t) + z
             z = self.net(z, t.flatten(), labels)
             
-        return z
+        return z.to(t.dtype)
 
     @torch.no_grad()
     def _forward_sample(self, z, t, labels, model):
@@ -178,22 +181,21 @@ class MCD_x0(nn.Module):
         dt = t_next - t
         z_next_euler = z + dt * v_pred_t
         z_next = z_next_euler.clone()
+        v_pred = v_pred_t.clone()
 
-        heun_mask = t_next != 1.0
+        heun_mask = (t_next.view(-1) != 1.0)  # [B]
         if heun_mask.any():
             v_pred_t_next = self._forward_sample(
                 z_next_euler[heun_mask],
-                t_next[heun_mask],
+                t_next.view(-1)[heun_mask].view(-1, 1, 1, 1),
                 labels[heun_mask],
                 model,
             )
-            v_pred = 0.5 * (v_pred_t[heun_mask] + v_pred_t_next)
-            z_next[heun_mask] = z[heun_mask] + dt[heun_mask] * v_pred
-        
-        if return_v:
-            return z_next, v_pred
-        else:
-            return z_next
+            v_pred_heun = 0.5 * (v_pred_t[heun_mask] + v_pred_t_next)
+            v_pred[heun_mask] = v_pred_heun
+            z_next[heun_mask] = z[heun_mask] + dt[heun_mask] * v_pred_heun
+    
+        return (z_next, v_pred) if return_v else z_next
 
     @torch.no_grad()
     def update_ema(self):

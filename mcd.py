@@ -47,8 +47,6 @@ class MCD(nn.Module):
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
             )
-        self.net_teacher = copy.deepcopy(self.net).eval()
-        self.net_teacher.requires_grad_(False)
         print_trainable(self.net)
 
         self.img_size = args.img_size
@@ -81,6 +79,10 @@ class MCD(nn.Module):
         self.boundaries = torch.tensor(
                         [interval[0] for interval in intervals] + [intervals[-1][-1]]
                     )
+
+    def create_teacher(self):
+        self.net_teacher = copy.deepcopy(self.net).eval()
+        self.net_teacher.requires_grad_(False)
 
     def sample_discrete_t_start(self, n, device):
         timesteps_start = self.timesteps_start.to(device)
@@ -166,24 +168,26 @@ class MCD(nn.Module):
         return z_next
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, labels, model=None):
+    def _heun_step(self, z, t, t_next, labels, model=None, return_v=False):
         v_pred_t = self._forward_sample(z, t, labels, model)
         dt = t_next - t
         z_next_euler = z + dt * v_pred_t
         z_next = z_next_euler.clone()
+        v_pred = v_pred_t.clone()
 
-        heun_mask = t_next != 1.0
+        heun_mask = (t_next.view(-1) != 1.0)  # [B]
         if heun_mask.any():
             v_pred_t_next = self._forward_sample(
                 z_next_euler[heun_mask],
-                t_next[heun_mask],
+                t_next.view(-1)[heun_mask].view(-1, 1, 1, 1),
                 labels[heun_mask],
                 model,
             )
-            v_pred = 0.5 * (v_pred_t[heun_mask] + v_pred_t_next)
-            z_next[heun_mask] = z[heun_mask] + dt[heun_mask] * v_pred
-            
-        return z_next
+            v_pred_heun = 0.5 * (v_pred_t[heun_mask] + v_pred_t_next)
+            v_pred[heun_mask] = v_pred_heun
+            z_next[heun_mask] = z[heun_mask] + dt[heun_mask] * v_pred_heun
+    
+        return (z_next, v_pred) if return_v else z_next
 
     @torch.no_grad()
     def update_ema(self):
