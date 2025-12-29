@@ -1,5 +1,6 @@
 import argparse
 import datetime
+from email.policy import strict
 import numpy as np
 import os
 import time
@@ -183,7 +184,8 @@ def main(args):
     checkpoint_path = args.resume if args.resume else None
     if checkpoint_path and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        model.load_state_dict(checkpoint['model'])
+        model.load_state_dict(checkpoint['model'], strict=False)
+        print("Resumed checkpoint from", args.resume)
 
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     model_without_ddp = model.module
@@ -194,29 +196,8 @@ def main(args):
     print(optimizer)
 
     # Resume from checkpoint if provided
-    if checkpoint_path and os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
-
-        ema_state_dict1 = checkpoint['model_ema1']
-        ema_state_dict2 = checkpoint['model_ema2']
-        model_without_ddp.ema_params1 = [ema_state_dict1[name].cuda() for name, _ in model_without_ddp.named_parameters()]
-        model_without_ddp.ema_params2 = [ema_state_dict2[name].cuda() for name, _ in model_without_ddp.named_parameters()]
-        print("Resumed checkpoint from", args.resume)
-
-        if 'optimizer' in checkpoint and 'epoch' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            args.start_epoch = checkpoint['epoch'] + 1
-            print("Loaded optimizer & scaler state!")
-        del checkpoint
-    else:
-        model_without_ddp.ema_params1 = copy.deepcopy(list(model_without_ddp.parameters()))
-        model_without_ddp.ema_params2 = copy.deepcopy(list(model_without_ddp.parameters()))
-        print("Training from scratch")
-
-    # Init teacher
-    model.net_teacher = copy.deepcopy(model.net).eval()
-    model.net_teacher.requires_grad_(False)
+    model_without_ddp.ema_params1 = copy.deepcopy(list(model_without_ddp.parameters()))
+    model_without_ddp.ema_params2 = copy.deepcopy(list(model_without_ddp.parameters()))
 
     # Evaluate generation
     if args.evaluate_gen:
