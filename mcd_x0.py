@@ -143,8 +143,7 @@ class MCD_x0(nn.Module):
         for i in range(size - 1):
             t = timesteps[i]
             if i == 0:
-                v_teacher_start = self.net_teacher(z, t.flatten(), labels)
-                z = v_teacher_start * (1 - t) + z
+                z = self.net_teacher(z, t.flatten(), labels)
             z = self.net(z, t.flatten(), labels)
             
         return z.to(t.dtype)
