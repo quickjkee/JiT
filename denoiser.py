@@ -39,15 +39,6 @@ def diffusion_loss(v, v_pred):
     loss = loss.mean(dim=(1, 2, 3)).mean()
     return loss
 
-
-def repa_loss(dino_feats, x_mid, t=None):
-    dino_feats = F.normalize(dino_feats, dim=-1) # [B,T,D]
-    x_mid = F.normalize(x_mid, dim=-1) # [B,T,D]
-    cos_sim = (dino_feats * x_mid).sum(dim=-1)    # [B,T]
-    loss_repa = -cos_sim.mean(dim=(1)).mean()
-    return loss_repa
-
-
 class Denoiser(nn.Module):
     def __init__(
         self,
@@ -55,22 +46,7 @@ class Denoiser(nn.Module):
     ):
         super().__init__()
 
-        if 'Dino' in args.model:
-            self.net = DinoJiT_models[args.model](
-                num_classes=args.class_num,
-                input_size=args.img_size,
-                attn_drop=args.attn_dropout,
-                proj_drop=args.proj_dropout,
-                do_decoder=args.do_decoder,
-                do_adaln_encoder=args.do_adaln_encoder,
-                do_repa=args.repa_coeff > 0.0,
-                model_path=args.model_path
-            )
-            if not args.do_adaln_encoder:
-                self.net_teacher = copy.deepcopy(self.net.dino_model).eval()
-                self.net_teacher.requires_grad_(False)
-        else:
-            self.net = JiT_models[args.model](
+        self.net = JiT_models[args.model](
                 input_size=args.img_size,
                 in_channels=3,
                 num_classes=args.class_num,
@@ -78,7 +54,6 @@ class Denoiser(nn.Module):
                 proj_drop=args.proj_dropout,
             )
         print_trainable(self.net)
-
 
         self.img_size = args.img_size
         self.num_classes = args.class_num
@@ -102,26 +77,6 @@ class Denoiser(nn.Module):
         self.cfg_scale = args.cfg
         self.cfg_interval = (args.interval_min, args.interval_max)
 
-    
-    @torch.no_grad()
-    def _forward_teacher(self, x):
-
-        # If adaln setup, then a teacher (dino) is included into the model
-        if self.args.do_adaln_encoder:
-            dino_feats, _ = self.net(x, None, None)
-
-        # If not adaln setup, then 
-        # Teacher (dino) is a separated model (copy)
-        else:
-            x_dino = F.interpolate(
-                        x, size=(224, 224), mode="bicubic", align_corners=False
-                    )
-            x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
-            x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
-            dino_feats = self.net_teacher.forward_features(x_dino)["x_norm_patchtokens"]
-
-        return dino_feats
-
     def drop_labels(self, labels):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
         out = torch.where(drop, torch.full_like(labels, self.num_classes), labels)
@@ -131,10 +86,7 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, x, labels, 
-                repa_coeff=0.0):
-        do_repa = repa_coeff > 0.0
-
+    def forward(self, x, labels):
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
@@ -142,22 +94,9 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        if do_repa:
-            dino_feats = self._forward_teacher(x)
-        x_pred = self.net(z, t.flatten(), labels_dropped, do_repa)
-
-        # dm loss only
-        if not do_repa:
-            v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-            loss = diffusion_loss(v, v_pred)
-
-        # dm + repa loss
-        else:
-            x_pred, x_mid = x_pred[0], x_pred[1]
-            v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-            loss = diffusion_loss(v, v_pred)
-            loss_repa = repa_loss(dino_feats, x_mid, t=t.flatten())
-            loss = loss + repa_coeff * loss_repa
+        x_pred = self.net(z, t.flatten(), labels_dropped)
+        v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
+        loss = diffusion_loss(v, v_pred)
 
         return loss
 

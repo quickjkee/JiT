@@ -29,14 +29,6 @@ def get_args_parser():
     parser.add_argument('--img_size', default=256, type=int, help='Image size')
     parser.add_argument('--attn_dropout', type=float, default=0.0, help='Attention dropout rate')
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
-    parser.add_argument('--do_decoder', action='store_true',
-                        help='whether to use large decoder for DinoJiT setup')
-    parser.add_argument('--do_adaln_encoder', action='store_true',
-                        help='whether to apply adaln layers to encoder for DinoJiT setup')
-    parser.add_argument('--repa_coeff', default=0.0, type=float,
-                        help='Coefficient for REPA loss')
-    parser.add_argument('--model_path', type=str,
-                        help='Path to DINOv3')
 
     # training
     parser.add_argument('--epochs', default=200, type=int)
@@ -257,7 +249,6 @@ def main(args):
             torch.cuda.empty_cache()
             with torch.no_grad():
                 evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
-            evaluate_linear_probing(model_without_ddp.net, args, device=device)
             torch.cuda.empty_cache()
 
         if misc.is_main_process() and log_writer is not None:
