@@ -109,7 +109,7 @@ class MCD(nn.Module):
         x0_start = self.net(z_start, t_start.flatten(), labels)
         v_start = (x0_start - z_start) / (1.0 - t_start).clamp_min(self.t_eps)
         f_start = z_start + (t_boundary - t_start) * v_start
-
+ 
         with torch.no_grad():
             x0_next = self.net(z_next, t_next.flatten(), labels)
             v_next = (x0_next - z_next) / (1.0 - t_next).clamp_min(self.t_eps)
@@ -124,7 +124,7 @@ class MCD(nn.Module):
         device = labels.device
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
-        timesteps = self.boundaries.view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
+        timesteps = self.boundaries.view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1).to(device)
         size = len(timesteps)
 
         # ode
