@@ -30,6 +30,7 @@ def get_args_parser():
     parser.add_argument('--attn_dropout', type=float, default=0.0, help='Attention dropout rate')
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
     parser.add_argument('--path_to_pretrained_dm', type=str, help='Path to pretrained teacher (diffusion model)')
+    parser.add_argument('--num_boundaries', default=10, type=int, help='Number of boundaries for MCD')
 
     # training
     parser.add_argument('--epochs', default=200, type=int)
