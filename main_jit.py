@@ -19,6 +19,7 @@ import copy
 from engine_jit import train_one_epoch, evaluate
 
 from mcd import MCD
+from mcd_x0 import MCD_x0
 
 
 def get_args_parser():
@@ -165,7 +166,10 @@ def main(args):
     torch._dynamo.config.optimize_ddp = False
 
     # Create denoiser
-    model = MCD(args)
+    if 'x0' in args.model:
+        model = MCD_x0(args)
+    else:
+        model = MCD(args)
 
     print("Model =", model)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

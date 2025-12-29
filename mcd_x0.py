@@ -1,4 +1,5 @@
 from ast import arg
+import re
 import torch
 import copy
 import torch.nn as nn
@@ -33,7 +34,7 @@ def mse_loss(pred, target):
     loss = loss.mean(dim=(1, 2, 3)).mean()
     return loss
 
-class MCD(nn.Module):
+class MCD_x0(nn.Module):
     def __init__(
         self,
         args
@@ -92,6 +93,7 @@ class MCD(nn.Module):
         return self.timesteps_start[idx], idx
 
     def forward(self, x, labels):
+        # Timesteps
         t_start, idx = self.sample_discrete_t_start(x.size(0), device=x.device)
         t_next = self.timesteps_end.to(x.device)[idx]
         t_start, t_next = t_start.view(-1, *([1] * (x.ndim - 1))), t_next.view(-1, *([1] * (x.ndim - 1)))
@@ -100,24 +102,30 @@ class MCD(nn.Module):
         idx = torch.searchsorted(boundaries, t_next.flatten(), right=False).clamp(max=boundaries.numel()-1)
         t_boundary = boundaries[idx].view_as(t_next)
 
+        # Teacher
         e = torch.randn_like(x) * self.noise_scale
         z_start = t_start * x + (1 - t_start) * e
-        z_next = self._heun_step(z_start, 
-                                 t_start, 
-                                 t_next, 
-                                 labels, model=self.net_teacher)
+        z_next, v_pred_start = self._heun_step(z_start, 
+                                               t_start, 
+                                               t_next, 
+                                               labels, 
+                                               model=self.net_teacher,
+                                               return_v=True)
+        x0_pred_start = z_start + v_pred_start * (1 - t_start)
 
-        x0_start = self.net(z_start, t_start.flatten(), labels)
-        v_start = (x0_start - z_start) / (1.0 - t_start).clamp_min(self.t_eps)
-        f_start = z_start + (t_boundary - t_start) * v_start
- 
+        # Prediction
+        x0_boundary_pred = self.net(x0_pred_start, t_start.flatten(), labels)
+
+        # Target
         with torch.no_grad():
-            x0_next = self.net(z_next, t_next.flatten(), labels)
-            v_next = (x0_next - z_next) / (1.0 - t_next).clamp_min(self.t_eps)
-            f_next = z_next + (t_boundary - t_next) * v_next
+            v_pred_next = self._forward_sample(z_next, t_next.flatten(), labels, self.net_teacher)
+            x0_pred_next = z_next + v_pred_next * (1 - t_next)
+            x0_boundary_target = self.net(x0_pred_next, t_next.flatten(), labels)
 
-        loss = mse_loss(f_start, f_next)
+            boundary_mask = (t_next == t_boundary)  # shape like t_next (broadcastable)
+            x0_boundary_target = torch.where(boundary_mask, x0_pred_next, x0_boundary_target)
 
+        loss = mse_loss(x0_boundary_pred, x0_boundary_target)
         return loss
 
     @torch.no_grad()
@@ -131,10 +139,10 @@ class MCD(nn.Module):
         # ode
         for i in range(size - 1):
             t = timesteps[i]
-            t_next = timesteps[i + 1]
-            x0 = self.net(z, t.flatten(), labels)
-            v = (x0 - z) / (1.0 - t).clamp_min(self.t_eps)
-            z = z + (t_next - t) * v
+            if i == 0:
+                v_teacher_start = self.net_teacher(z, t.flatten(), labels)
+                z = v_teacher_start * (1 - t) + z
+            z = self.net(z, t.flatten(), labels)
             
         return z
 
@@ -165,7 +173,7 @@ class MCD(nn.Module):
         return z_next
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, labels, model=None):
+    def _heun_step(self, z, t, t_next, labels, model=None, return_v=False):
         v_pred_t = self._forward_sample(z, t, labels, model)
         dt = t_next - t
         z_next_euler = z + dt * v_pred_t
@@ -181,8 +189,11 @@ class MCD(nn.Module):
             )
             v_pred = 0.5 * (v_pred_t[heun_mask] + v_pred_t_next)
             z_next[heun_mask] = z[heun_mask] + dt[heun_mask] * v_pred
-            
-        return z_next
+        
+        if return_v:
+            return z_next, v_pred
+        else:
+            return z_next
 
     @torch.no_grad()
     def update_ema(self):
