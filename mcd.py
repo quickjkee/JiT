@@ -74,7 +74,7 @@ class MCD(nn.Module):
         self.cfg_interval = (args.interval_min, args.interval_max)
 
         # distillation hyper params
-        self.timesteps = torch.linspace(0.0, 1.0, self.steps+1).to(self.net.device)
+        self.timesteps = torch.linspace(0.0, 1.0, self.steps+1)
         self.timesteps_end = self.timesteps[1:]
         self.timesteps_start = self.timesteps[:-1]
         intervals = torch.chunk(self.timesteps, args.num_boundaries)
@@ -91,13 +91,13 @@ class MCD(nn.Module):
     def sample_discrete_t_start(self, n, device):
         z = torch.randn(n, device=device) * 0.8 - 0.8
         t = torch.sigmoid(z)
-        idx = torch.bucketize(t, self.timesteps_start)
+        idx = torch.bucketize(t, self.timesteps_start.to(device))
         idx = (idx - 1).clamp(0, self.timesteps_start.numel() - 1)
         return self.timesteps_start[idx], idx
 
     def forward(self, x, labels):
         t_start, idx = self.sample_discrete_t_start(x.size(0), device=x.device)
-        t_next = self.timesteps_end[idx]
+        t_next = self.timesteps_end.to(x.device)[idx]
         t_start, t_next = t_start.view(-1, *([1] * (x.ndim - 1))), t_next.view(-1, *([1] * (x.ndim - 1)))
 
         e = torch.randn_like(x) * self.noise_scale
