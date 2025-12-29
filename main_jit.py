@@ -15,9 +15,9 @@ from util.crop import center_crop_arr
 import util.misc as misc
 
 import copy
-from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
+from engine_jit import train_one_epoch, evaluate
 
-from denoiser import Denoiser
+from mcd import MCD
 
 
 def get_args_parser():
@@ -29,6 +29,7 @@ def get_args_parser():
     parser.add_argument('--img_size', default=256, type=int, help='Image size')
     parser.add_argument('--attn_dropout', type=float, default=0.0, help='Attention dropout rate')
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
+    parser.add_argument('--path_to_pretrained_dm', type=str, help='Path to pretrained teacher (diffusion model)')
 
     # training
     parser.add_argument('--epochs', default=200, type=int)
@@ -162,7 +163,7 @@ def main(args):
     torch._dynamo.config.optimize_ddp = False
 
     # Create denoiser
-    model = Denoiser(args)
+    model = MCD(args)
 
     print("Model =", model)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -178,6 +179,11 @@ def main(args):
     print("Actual lr: {:.2e}".format(args.lr))
     print("Effective batch size: %d" % eff_batch_size)
 
+    checkpoint_path = args.resume if args.resume else None
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        model.load_state_dict(checkpoint['model'])
+
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     model_without_ddp = model.module
 
@@ -187,7 +193,6 @@ def main(args):
     print(optimizer)
 
     # Resume from checkpoint if provided
-    checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
     if checkpoint_path and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         model_without_ddp.load_state_dict(checkpoint['model'])
