@@ -68,7 +68,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
 
         model_without_ddp.update_ema()
 
-        metric_logger.update(loss=loss_value)
+        metric_logger.update(loss=loss_value * 1000)
         lr = optimizer.param_groups[0]["lr"]
         metric_logger.update(lr=lr)
 
