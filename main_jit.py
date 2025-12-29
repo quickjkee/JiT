@@ -183,7 +183,7 @@ def main(args):
     checkpoint_path = args.resume if args.resume else None
     if checkpoint_path and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        model.load_state_dict(checkpoint['model'], strict=False)
+        model.load_state_dict(checkpoint['model'])
 
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     model_without_ddp = model.module
@@ -196,7 +196,7 @@ def main(args):
     # Resume from checkpoint if provided
     if checkpoint_path and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+        model_without_ddp.load_state_dict(checkpoint['model'])
 
         ema_state_dict1 = checkpoint['model_ema1']
         ema_state_dict2 = checkpoint['model_ema2']
@@ -213,6 +213,10 @@ def main(args):
         model_without_ddp.ema_params1 = copy.deepcopy(list(model_without_ddp.parameters()))
         model_without_ddp.ema_params2 = copy.deepcopy(list(model_without_ddp.parameters()))
         print("Training from scratch")
+
+    # Init teacher
+    model.net_teacher = copy.deepcopy(model.net).eval()
+    model.net_teacher.requires_grad_(False)
 
     # Evaluate generation
     if args.evaluate_gen:

@@ -47,8 +47,6 @@ class MCD(nn.Module):
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
             )
-        self.net_teacher = copy.deepcopy(self.net).eval()
-        self.net_teacher.requires_grad_(False)
         print_trainable(self.net)
 
         self.img_size = args.img_size
@@ -138,7 +136,7 @@ class MCD(nn.Module):
             x0 = self.net(z, t.flatten(), labels)
             v = (x0 - z) / (1.0 - t).clamp_min(self.t_eps)
             z = z + (t_next - t) * v
-            
+
         return z
 
     @torch.no_grad()
