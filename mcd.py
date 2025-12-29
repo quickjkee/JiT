@@ -82,12 +82,6 @@ class MCD(nn.Module):
                         [interval[0] for interval in intervals] + [intervals[-1][-1]]
                     )
 
-
-    def drop_labels(self, labels):
-        drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
-        out = torch.where(drop, torch.full_like(labels, self.num_classes), labels)
-        return out
-
     def sample_discrete_t_start(self, n, device):
         z = torch.randn(n, device=device) * 0.8 - 0.8
         t = torch.sigmoid(z)
@@ -101,6 +95,10 @@ class MCD(nn.Module):
         t_next = self.timesteps_end.to(x.device)[idx]
         t_start, t_next = t_start.view(-1, *([1] * (x.ndim - 1))), t_next.view(-1, *([1] * (x.ndim - 1)))
 
+        boundaries = self.boundaries.to(x.device)
+        idx = torch.searchsorted(boundaries, t_next.flatten(), right=False).clamp(max=boundaries.numel()-1)
+        t_boundary = boundaries[idx].view_as(t_next)
+
         e = torch.randn_like(x) * self.noise_scale
         z_start = t_start * x + (1 - t_start) * e
         z_next = self._heun_step(z_start, 
@@ -110,13 +108,9 @@ class MCD(nn.Module):
 
         x0_start = self.net(z_start, t_start.flatten(), labels)
         v_start = (x0_start - z_start) / (1.0 - t_start).clamp_min(self.t_eps)
-        f_start = z_start + (t_next - t_start) * v_start
+        f_start = z_start + (t_boundary - t_start) * v_start
 
         with torch.no_grad():
-            boundaries = self.boundaries.to(x.device)
-            idx = torch.searchsorted(boundaries, t_next.flatten(), right=False).clamp(max=boundaries.numel()-1)
-            t_boundary = boundaries[idx].view_as(t_next)
-
             x0_next = self.net(z_next, t_next.flatten(), labels)
             v_next = (x0_next - z_next) / (1.0 - t_next).clamp_min(self.t_eps)
             f_next = z_next + (t_boundary - t_next) * v_next
