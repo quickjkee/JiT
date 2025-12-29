@@ -1,14 +1,8 @@
 from ast import arg
 import torch
 import torch.nn as nn
-import copy
-import torch.nn.functional as F
 from math import exp
 from model_jit import JiT_models
-from model_dino import DinoJiT_models
-from model_dinov3 import DINOv3JiT_models
-from torchvision.transforms import Normalize
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 def print_trainable(model):
