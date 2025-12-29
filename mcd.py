@@ -113,8 +113,9 @@ class MCD(nn.Module):
         f_start = z_start + (t_next - t_start) * v_start
 
         with torch.no_grad():
-            idx = torch.searchsorted(self.boundaries.view(-1, *([1] * (x.ndim - 1))), t_next, right=False).clamp(max=self.boundaries.numel()-1)
-            t_boundary = self.boundaries.view(-1, *([1] * (x.ndim - 1)))[idx]
+            boundaries = self.boundaries.to(x.device).view(-1, *([1] * (x.ndim - 1)))
+            idx = torch.searchsorted(boundaries, t_next, right=False).clamp(max=boundaries.numel()-1)
+            t_boundary = boundaries[idx]
 
             x0_next = self.net(z_next, t_next.flatten(), labels)
             v_next = (x0_next - z_next) / (1.0 - t_next).clamp_min(self.t_eps)
