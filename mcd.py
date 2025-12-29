@@ -74,7 +74,7 @@ class MCD(nn.Module):
         self.cfg_interval = (args.interval_min, args.interval_max)
 
         # distillation hyper params
-        self.timesteps = torch.linspace(0.0, 1.0, self.steps+1)
+        self.timesteps = torch.linspace(0.0, 1.0, self.steps+1).to(self.net.device)
         self.timesteps_end = self.timesteps[1:]
         self.timesteps_start = self.timesteps[:-1]
         intervals = torch.chunk(self.timesteps, args.num_boundaries)
