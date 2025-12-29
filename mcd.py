@@ -91,9 +91,10 @@ class MCD(nn.Module):
     def sample_discrete_t_start(self, n, device):
         z = torch.randn(n, device=device) * 0.8 - 0.8
         t = torch.sigmoid(z)
-        idx = torch.bucketize(t, self.timesteps_start.to(device))
-        idx = (idx - 1).clamp(0, self.timesteps_start.numel() - 1)
-        return self.timesteps_start[idx], idx
+        timesteps_start = self.timesteps_start.to(device)
+        idx = torch.bucketize(t, timesteps_start)
+        idx = (idx - 1).clamp(0, timesteps_start.numel() - 1)
+        return timesteps_start[idx], idx
 
     def forward(self, x, labels):
         t_start, idx = self.sample_discrete_t_start(x.size(0), device=x.device)
