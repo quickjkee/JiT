@@ -108,7 +108,7 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
         assert name in ema_state_dict
         ema_state_dict[name] = model_without_ddp.ema_params1[i]
     print("Switch to ema")
-    model_without_ddp.load_state_dict(ema_state_dict)
+    model_without_ddp.load_state_dict(model_state_dict) # TODO
 
     # ensure that the number of images per class is equal.
     class_num = args.class_num

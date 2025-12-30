@@ -5,6 +5,8 @@ import copy
 import torch.nn as nn
 from math import exp
 from model_jit import JiT_models
+import torchvision.utils as vutils
+import torch.distributed as dist
 
 
 def print_trainable(model):
@@ -137,15 +139,22 @@ class MCD_x0(nn.Module):
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
         timesteps = self.boundaries.view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1).to(device)
+        timsteps_next = self.timesteps_end.view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1).to(device)
         size = len(timesteps)
 
         # ode
         for i in range(size - 1):
             t = timesteps[i]
             if i == 0:
-                z = self.net_teacher(z, t.flatten(), labels)
+                _, v = self._heun_step(z, 
+                                       t, 
+                                       timsteps_next[i], 
+                                       labels, 
+                                       model=self.net_teacher,
+                                       return_v=True)
+                z = z + v * (1 - t)
             z = self.net(z, t.flatten(), labels)
-            
+
         return z.to(t.dtype)
 
     @torch.no_grad()
