@@ -33,8 +33,30 @@ def print_trainable(model):
 
 def mse_loss(pred, target):
     loss = (pred - target) ** 2
-    loss = loss.mean(dim=(1, 2, 3)).mean()
+    loss = (loss.mean(dim=(1, 2, 3))).mean()
     return loss
+
+def huber_loss(pred, target, w=None, delta=1.0):
+    """
+    pred, target: [B, C, H, W]
+    w: optional [B] or [B,1,1,1] sample weights
+    delta: Huber threshold
+    """
+    diff = pred - target
+    abs_diff = diff.abs()
+
+    quadratic = torch.minimum(abs_diff, torch.tensor(delta, device=diff.device))
+    linear = abs_diff - quadratic
+
+    loss = 0.5 * quadratic.pow(2) + delta * linear
+    loss = loss.mean(dim=(1, 2, 3))  # per-sample
+
+    if w is not None:
+        loss = loss * w.view(-1)
+
+    return loss.mean()
+
+    
 
 class MCD_x0(nn.Module):
     def __init__(
@@ -100,7 +122,9 @@ class MCD_x0(nn.Module):
     def forward(self, x, labels):
         # Timesteps
         t_start, idx = self.sample_discrete_t_start(x.size(0), device=x.device)
+        idx_next = torch.clamp(idx + 1, max=self.timesteps_end.numel() - 1)
         t_next = self.timesteps_end.to(x.device)[idx]
+        t_next_next = self.timesteps_end.to(x.device)[idx_next].view(-1, *([1] * (x.ndim - 1)))
         t_start, t_next = t_start.view(-1, *([1] * (x.ndim - 1))), t_next.view(-1, *([1] * (x.ndim - 1)))
 
         boundaries = self.boundaries.to(x.device)
@@ -110,12 +134,8 @@ class MCD_x0(nn.Module):
         # Teacher
         e = torch.randn_like(x) * self.noise_scale
         z_start = t_start * x + (1 - t_start) * e
-        z_next, v_pred_start = self._heun_step(z_start, 
-                                               t_start, 
-                                               t_next, 
-                                               labels, 
-                                               model=self.net_teacher,
-                                               return_v=True)
+        z_next, v_pred_start = self._heun_step(z_start, t_start, t_next, labels, 
+                                               model=self.net_teacher, return_v=True)
         x0_pred_start = z_start + v_pred_start * (1 - t_start)
 
         # Prediction
@@ -125,7 +145,8 @@ class MCD_x0(nn.Module):
 
         # Target
         with torch.no_grad():
-            v_pred_next = self._forward_sample(z_next, t_next, labels, self.net_teacher)
+            _, v_pred_next = self._heun_step(z_next, t_next, t_next_next, labels, 
+                                             model=self.net_teacher, return_v=True)
             x0_pred_next = z_next + v_pred_next * (1 - t_next)
             x0_boundary_target = self.net(x0_pred_next, t_next.flatten(), labels)
             scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
@@ -154,9 +175,9 @@ class MCD_x0(nn.Module):
                                        labels, 
                                        model=self.net_teacher,
                                        return_v=True)
-                z = z + v * (1 - t)
+                z = z + v * (1 - t)     
             z_ = self.net(z, t.flatten(), labels)
-            scale = (t_next - t) / (1 - t)
+            scale = (t_next - t) / (1 - t).clamp_min(self.t_eps)
             z = z + scale * z_
 
         return z.to(t.dtype)
