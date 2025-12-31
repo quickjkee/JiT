@@ -120,17 +120,16 @@ class MCD_x0(nn.Module):
 
         # Prediction
         x0_boundary_pred = self.net(x0_pred_start, t_start.flatten(), labels)
-        x0_boundary_pred = x0_pred_start + (t_boundary - t_start) * x0_boundary_pred # TODO
+        scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
+        x0_boundary_pred = x0_pred_start + scale * x0_boundary_pred
 
         # Target
         with torch.no_grad():
             v_pred_next = self._forward_sample(z_next, t_next, labels, self.net_teacher)
             x0_pred_next = z_next + v_pred_next * (1 - t_next)
             x0_boundary_target = self.net(x0_pred_next, t_next.flatten(), labels)
-            x0_boundary_target = x0_pred_next + (t_boundary - t_next) * x0_boundary_target # TODO
-
-            #boundary_mask = (t_next == t_boundary)
-            #x0_boundary_target = torch.where(boundary_mask, x0_pred_next, x0_boundary_target)
+            scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
+            x0_boundary_target = x0_pred_next + scale * x0_boundary_target
 
         loss = mse_loss(x0_boundary_pred, x0_boundary_target)
         return loss
@@ -157,7 +156,8 @@ class MCD_x0(nn.Module):
                                        return_v=True)
                 z = z + v * (1 - t)
             z_ = self.net(z, t.flatten(), labels)
-            z = z + (t_next - t) * z_ # TODO
+            scale = (t_next - t) / (1 - t)
+            z = z + scale * z_
 
         return z.to(t.dtype)
 
