@@ -140,7 +140,7 @@ class MCD_x0(nn.Module):
 
         # Prediction
         x0_boundary_pred = self.net(x0_pred_start, t_start.flatten(), labels)
-        scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
+        scale = (t_boundary - t_start) #/ (1 - t_start).clamp_min(self.t_eps)
         x0_boundary_pred = x0_pred_start + scale * x0_boundary_pred
 
         # Target
@@ -149,7 +149,7 @@ class MCD_x0(nn.Module):
                                              model=self.net_teacher, return_v=True)
             x0_pred_next = z_next + v_pred_next * (1 - t_next)
             x0_boundary_target = self.net(x0_pred_next, t_next.flatten(), labels)
-            scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
+            scale = (t_boundary - t_next)  #/ (1 - t_next).clamp_min(self.t_eps)
             x0_boundary_target = x0_pred_next + scale * x0_boundary_target
 
         loss = mse_loss(x0_boundary_pred, x0_boundary_target)
@@ -177,7 +177,7 @@ class MCD_x0(nn.Module):
                                        return_v=True)
                 z = z + v * (1 - t)     
             z_ = self.net(z, t.flatten(), labels)
-            scale = (t_next - t) / (1 - t).clamp_min(self.t_eps)
+            scale = (t_next - t) #/ (1 - t).clamp_min(self.t_eps)
             z = z + scale * z_
 
         return z.to(t.dtype)
