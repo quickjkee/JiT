@@ -140,7 +140,7 @@ class MCD_x0(nn.Module):
 
         # Prediction
         x0_boundary_pred = self.net(x0_pred_start, t_start.flatten(), labels)
-        scale = (t_boundary - t_start) #/ (1 - t_start).clamp_min(self.t_eps)
+        scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
         x0_boundary_pred = x0_pred_start + scale * x0_boundary_pred
 
         # Target
@@ -149,7 +149,7 @@ class MCD_x0(nn.Module):
                                              model=self.net_teacher, return_v=True)
             x0_pred_next = z_next + v_pred_next * (1 - t_next)
             x0_boundary_target = self.net(x0_pred_next, t_next.flatten(), labels)
-            scale = (t_boundary - t_next)  #/ (1 - t_next).clamp_min(self.t_eps)
+            scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
             x0_boundary_target = x0_pred_next + scale * x0_boundary_target
 
         loss = mse_loss(x0_boundary_pred, x0_boundary_target)
@@ -169,15 +169,11 @@ class MCD_x0(nn.Module):
             t = timesteps[i]
             t_next = timesteps[i + 1]
             if i == 0:
-                _, v = self._heun_step(z, 
-                                       t, 
-                                       timsteps_next[i], 
-                                       labels, 
-                                       model=self.net_teacher,
-                                       return_v=True)
+                _, v = self._heun_step(z, t, timsteps_next[i], labels, 
+                                       model=self.net_teacher, return_v=True)
                 z = z + v * (1 - t)     
             z_ = self.net(z, t.flatten(), labels)
-            scale = (t_next - t) #/ (1 - t).clamp_min(self.t_eps)
+            scale = (t_next - t) / (1 - t).clamp_min(self.t_eps)
             z = z + scale * z_
 
         return z.to(t.dtype)
@@ -215,6 +211,7 @@ class MCD_x0(nn.Module):
         z_next_euler = z + dt * v_pred_t
         z_next = z_next_euler.clone()
         v_pred = v_pred_t.clone()
+        v_pred_euler = v_pred_t.clone()
 
         heun_mask = (t_next.view(-1) != 1.0)  # [B]
         if heun_mask.any():
@@ -228,7 +225,7 @@ class MCD_x0(nn.Module):
             v_pred[heun_mask] = v_pred_heun
             z_next[heun_mask] = z[heun_mask] + dt[heun_mask] * v_pred_heun
     
-        return (z_next, v_pred) if return_v else z_next
+        return (z_next, v_pred_euler) if return_v else z_next
 
     @torch.no_grad()
     def update_ema(self):
