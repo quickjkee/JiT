@@ -55,7 +55,6 @@ def huber_loss(pred, target, w=None, delta=1.0):
         loss = loss * w.view(-1)
 
     return loss.mean()
-
     
 
 class MCD_x0(nn.Module):
@@ -152,7 +151,7 @@ class MCD_x0(nn.Module):
             scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
             x0_boundary_target = x0_pred_next + scale * x0_boundary_target
 
-        loss = mse_loss(x0_boundary_pred, x0_boundary_target)
+        loss = huber_loss(x0_boundary_pred, x0_boundary_target)
         return loss
 
     @torch.no_grad()
@@ -211,7 +210,6 @@ class MCD_x0(nn.Module):
         z_next_euler = z + dt * v_pred_t
         z_next = z_next_euler.clone()
         v_pred = v_pred_t.clone()
-        v_pred_euler = v_pred_t.clone()
 
         heun_mask = (t_next.view(-1) != 1.0)  # [B]
         if heun_mask.any():
@@ -225,7 +223,7 @@ class MCD_x0(nn.Module):
             v_pred[heun_mask] = v_pred_heun
             z_next[heun_mask] = z[heun_mask] + dt[heun_mask] * v_pred_heun
     
-        return (z_next, v_pred_euler) if return_v else z_next
+        return (z_next, v_pred) if return_v else z_next
 
     @torch.no_grad()
     def update_ema(self):
