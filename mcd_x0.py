@@ -138,20 +138,20 @@ class MCD_x0(nn.Module):
         x0_pred_start = z_start + v_pred_start * (1 - t_start)
 
         # Prediction
-        x0_boundary_pred = self.net(x0_pred_start, t_start.flatten(), labels)
-        scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
-        x0_boundary_pred = x0_pred_start + scale * x0_boundary_pred
+        delta_pred = self.net(x0_pred_start, t_start.flatten(), labels)
 
         # Target
         with torch.no_grad():
             _, v_pred_next = self._heun_step(z_next, t_next, t_next_next, labels, 
                                              model=self.net_teacher, return_v=True)
             x0_pred_next = z_next + v_pred_next * (1 - t_next)
-            x0_boundary_target = self.net(x0_pred_next, t_next.flatten(), labels)
+            delta_target = self.net(x0_pred_next, t_next.flatten(), labels)
             scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
-            x0_boundary_target = x0_pred_next + scale * x0_boundary_target
+            x0_boundary_target = x0_pred_next + scale * delta_target
 
-        loss = huber_loss(x0_boundary_pred, x0_boundary_target)
+        scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
+        delta_target = (x0_boundary_target - x0_pred_start) / scale.clamp_min(1e-4)
+        loss = mse_loss(delta_pred, delta_target)
         return loss
 
     @torch.no_grad()
