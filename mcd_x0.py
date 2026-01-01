@@ -151,7 +151,7 @@ class MCD_x0(nn.Module):
 
         scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
         delta_target = (x0_boundary_target - x0_pred_start) / scale.clamp_min(1e-4)
-        loss = mse_loss(delta_pred, delta_target)
+        loss = huber_loss(delta_pred, delta_target)
         return loss
 
     @torch.no_grad()
