@@ -1,6 +1,7 @@
 import argparse
 import datetime
 from email.policy import strict
+from turtle import mode
 import numpy as np
 import os
 import time
@@ -212,6 +213,7 @@ def main(args):
             torch.manual_seed(seed)
             with torch.no_grad():
                 evaluate(model_without_ddp, args, 0, batch_size=args.gen_bsz, log_writer=log_writer)
+                evaluate(model.module, args, 0, batch_size=args.gen_bsz, log_writer=log_writer)
         return
 
     # Training loop
