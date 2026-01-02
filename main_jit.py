@@ -212,8 +212,8 @@ def main(args):
         with torch.random.fork_rng():
             torch.manual_seed(seed)
             with torch.no_grad():
-                evaluate(model_without_ddp, args, 0, batch_size=args.gen_bsz, log_writer=log_writer)
-                evaluate(model.module, args, 0, batch_size=args.gen_bsz, log_writer=log_writer)
+                evaluate(model_without_ddp, args, 0, batch_size=args.gen_bsz, log_writer=log_writer, do_ema=True)
+                evaluate(model.module, args, 0, batch_size=args.gen_bsz, log_writer=log_writer, do_ema=False)
         return
 
     # Training loop

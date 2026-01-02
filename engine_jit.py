@@ -82,7 +82,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
                 log_writer.add_scalar('lr', lr, epoch_1000x)
 
 
-def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
+def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, do_ema=True):
 
     model_without_ddp.eval()
     world_size = misc.get_world_size()
@@ -102,13 +102,14 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
         os.makedirs(save_folder)
 
     # switch to ema params, hard-coded to be the first one
-    model_state_dict = copy.deepcopy(model_without_ddp.state_dict())
-    ema_state_dict = copy.deepcopy(model_without_ddp.state_dict())
-    for i, (name, _value) in enumerate(model_without_ddp.named_parameters()):
-        assert name in ema_state_dict
-        ema_state_dict[name] = model_without_ddp.ema_params1[i]
-    print("Switch to ema")
-    model_without_ddp.load_state_dict(ema_state_dict)
+    if do_ema:
+        model_state_dict = copy.deepcopy(model_without_ddp.state_dict())
+        ema_state_dict = copy.deepcopy(model_without_ddp.state_dict())
+        for i, (name, _value) in enumerate(model_without_ddp.named_parameters()):
+            assert name in ema_state_dict
+            ema_state_dict[name] = model_without_ddp.ema_params1[i]
+        print("Switch to ema")
+        model_without_ddp.load_state_dict(ema_state_dict)
 
     # ensure that the number of images per class is equal.
     class_num = args.class_num
