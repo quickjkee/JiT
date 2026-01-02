@@ -148,6 +148,8 @@ class MCD_x0(nn.Module):
             delta_target = self.net(x0_pred_next, t_next.flatten(), labels)
             scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
             x0_boundary_target = x0_pred_next + scale * delta_target
+            boundary_mask = (t_next - t_boundary).abs() < 1e-6
+            x0_boundary_target = torch.where(boundary_mask, x0_pred_next, x0_boundary_target)
 
         scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
         delta_target = (x0_boundary_target - x0_pred_start) / scale.clamp_min(1e-4)
