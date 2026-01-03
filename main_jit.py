@@ -54,7 +54,7 @@ def get_args_parser():
                         help='Weight decay (default: 0.0)')
     parser.add_argument('--ema_decay1', type=float, default=0.9999,
                         help='The first ema to track. Use the first ema for sampling by default.')
-    parser.add_argument('--ema_decay2', type=float, default=0.9996,
+    parser.add_argument('--ema_decay2', type=float, default=0.999,
                         help='The second ema to track')
     parser.add_argument('--P_mean', default=-0.8, type=float)
     parser.add_argument('--P_std', default=0.8, type=float)

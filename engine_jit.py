@@ -87,7 +87,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
 
         model_without_ddp.update_ema()
         global_step = epoch * len(data_loader) + data_iter_step
-        d = ema_decay(global_step, base=args.ema_decay1, warmup_steps=1000)
+        d = ema_decay(global_step, base=args.ema_decay2, warmup_steps=1000)
         ema_update(ema_model, model, decay=d)
 
         metric_logger.update(loss=loss_value * 1000)
