@@ -168,8 +168,9 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, do_
     torch.distributed.barrier()
 
     # back to no ema
-    print("Switch back from ema")
-    model_without_ddp.load_state_dict(model_state_dict)
+    if do_ema:
+        print("Switch back from ema")
+        model_without_ddp.load_state_dict(model_state_dict)
 
     # compute FID and IS
     if log_writer is not None:
