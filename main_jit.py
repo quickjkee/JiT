@@ -196,6 +196,10 @@ def main(args):
 
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     model_without_ddp = model.module
+    ema_model = copy.deepcopy(model_without_ddp).to(device)
+    ema_model.eval()
+    for p in ema_model.parameters():
+        p.requires_grad_(False)
 
     # Set up optimizer with weight decay adjustment for bias and norm layers
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
@@ -223,7 +227,7 @@ def main(args):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
+        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, ema_model=ema_model, log_writer=log_writer, args=args)
 
         # Save checkpoint periodically
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
@@ -247,7 +251,8 @@ def main(args):
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
             with torch.no_grad():
-                evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
+                evaluate(model_without_ddp, args, 0, batch_size=args.gen_bsz, log_writer=log_writer, do_ema=True)
+                evaluate(model.module, args, 0, batch_size=args.gen_bsz, log_writer=log_writer, do_ema=False)
             torch.cuda.empty_cache()
 
         if misc.is_main_process() and log_writer is not None:

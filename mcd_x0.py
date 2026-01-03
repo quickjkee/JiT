@@ -118,7 +118,7 @@ class MCD_x0(nn.Module):
         )
         return timesteps_start[idx], idx
 
-    def forward(self, x, labels):
+    def forward(self, x, labels, ema_model=None):
         # Timesteps
         t_start, idx = self.sample_discrete_t_start(x.size(0), device=x.device)
         idx_next = torch.clamp(idx + 1, max=self.timesteps_end.numel() - 1)
@@ -145,7 +145,8 @@ class MCD_x0(nn.Module):
             _, v_pred_next = self._heun_step(z_next, t_next, t_next_next, labels, 
                                              model=self.net_teacher, return_v=True)
             x0_pred_next = z_next + v_pred_next * (1 - t_next)
-            delta_target = self.net(x0_pred_next, t_next.flatten(), labels)
+            target_fn = self.net if ema_model is None else ema_model.net
+            delta_target = target_fn(x0_pred_next, t_next.flatten(), labels)
             scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
             x0_boundary_target = x0_pred_next + scale * delta_target
             boundary_mask = (t_next - t_boundary).abs() < 1e-6
