@@ -1,7 +1,6 @@
 import argparse
 import datetime
 from email.policy import strict
-from turtle import mode
 import numpy as np
 import os
 import time
