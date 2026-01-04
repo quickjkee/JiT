@@ -244,6 +244,104 @@ def save_statistics_of_path(path, out_path, device=None, batch_size=50, dims=204
     np.savez(out_path, mu=m1, sigma=s1)
 
 
+import math
+
+def _compute_knn_radii(features: torch.Tensor, k: int, batch_size: int = 1024) -> torch.Tensor:
+    """
+    For each point x in 'features', compute radius r(x) = distance to its k-th nearest neighbor
+    within the SAME set (excluding itself).
+    features: (N, D) float32/float64 tensor on device
+    returns: (N,) tensor of radii
+    """
+    assert features.dim() == 2
+    N = features.size(0)
+    device = features.device
+
+    # we need k+1 neighbors if self is included, but we'll exclude self explicitly
+    radii = torch.empty(N, device=device, dtype=features.dtype)
+
+    for i in range(0, N, batch_size):
+        j = min(i + batch_size, N)
+        x = features[i:j]  # (B, D)
+
+        # (B, N) distances
+        d = torch.cdist(x, features)
+
+        # exclude self-distances for rows that correspond to the same indices
+        # only valid when comparing a slice against the full set
+        row_idx = torch.arange(i, j, device=device)
+        d[torch.arange(j - i, device=device), row_idx] = float("inf")
+
+        # k-th nearest => take topk smallest, then pick last
+        # (B, k)
+        knn = torch.topk(d, k=k, largest=False, dim=1).values
+        radii[i:j] = knn[:, -1]
+
+    return radii
+
+
+def _compute_membership(
+    query: torch.Tensor,
+    ref: torch.Tensor,
+    ref_radii: torch.Tensor,
+    batch_size: int = 1024
+) -> torch.Tensor:
+    """
+    For each query point q, find nearest neighbor in ref and check if dist(q, ref_nn) <= ref_radii[ref_nn].
+    returns: (N_query,) boolean tensor
+    """
+    assert query.dim() == 2 and ref.dim() == 2
+    Nq = query.size(0)
+    device = query.device
+
+    inside = torch.empty(Nq, device=device, dtype=torch.bool)
+
+    for i in range(0, Nq, batch_size):
+        j = min(i + batch_size, Nq)
+        q = query[i:j]  # (B, D)
+
+        d = torch.cdist(q, ref)  # (B, Nref)
+        nn_dist, nn_idx = torch.min(d, dim=1)  # (B,), (B,)
+        inside[i:j] = nn_dist <= ref_radii[nn_idx]
+
+    return inside
+
+
+def calculate_precision_recall_from_activations(
+    act_real: np.ndarray,
+    act_fake: np.ndarray,
+    k: int = 3,
+    device: str | torch.device = "cpu",
+    batch_size_dist: int = 1024
+) -> tuple[float, float]:
+    """
+    Precision/Recall for GANs (Improved PR metric family).
+    - Precision: fraction of fake samples inside real manifold
+    - Recall: fraction of real samples inside fake manifold
+
+    act_real: (N, D) numpy
+    act_fake: (M, D) numpy
+    """
+    if isinstance(device, str):
+        device = torch.device(device)
+
+    real = torch.from_numpy(act_real).to(device=device, dtype=torch.float32)
+    fake = torch.from_numpy(act_fake).to(device=device, dtype=torch.float32)
+
+    # radii for manifolds
+    real_r = _compute_knn_radii(real, k=k, batch_size=batch_size_dist)
+    fake_r = _compute_knn_radii(fake, k=k, batch_size=batch_size_dist)
+
+    # membership tests
+    fake_in_real = _compute_membership(fake, real, real_r, batch_size=batch_size_dist)
+    real_in_fake = _compute_membership(real, fake, fake_r, batch_size=batch_size_dist)
+
+    precision = fake_in_real.float().mean().item()
+    recall = real_in_fake.float().mean().item()
+    return precision, recall
+
+
+
 def calculate_fid(
     path1,
     path,
@@ -272,3 +370,61 @@ def calculate_fid(
                                         dims, device, num_workers)
     fid_value = calculate_frechet_distance(m1, s1, m2, s2)
     return fid_value
+
+
+def calculate_fid_precision_recall(
+    path_real,
+    path_fake,
+    device=None,
+    batch_size=40,
+    dims=2048,
+    num_workers=4,
+    inception_path="evaluations/pt_inception-2015-12-05-6726825d.pth",
+    k=3,
+    pr_dist_batch_size=1024,
+    max_samples=None,   # optional: speed knob for huge folders
+):
+    """
+    Returns: (fid, precision, recall)
+    """
+    if device is None:
+        device = torch.device('cuda' if (torch.cuda.is_available()) else 'cpu')
+    else:
+        device = torch.device(device)
+
+    if not os.path.exists(path_real):
+        raise RuntimeError(f'Invalid path: {path_real}')
+    if not os.path.exists(path_fake):
+        raise RuntimeError(f'Invalid path: {path_fake}')
+
+    block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
+    model = InceptionV3([block_idx], inception_path=inception_path).to(device)
+
+    # ---- FID (your existing stats path) ----
+    m1, s1 = compute_statistics_of_path(path_real, model, batch_size, dims, device, num_workers)
+    m2, s2 = compute_statistics_of_path(path_fake, model, batch_size, dims, device, num_workers)
+    fid_value = calculate_frechet_distance(m1, s1, m2, s2)
+
+    # ---- Precision/Recall needs sample-level activations ----
+    def _load_images_from_folder(folder):
+        folder = pathlib.Path(folder)
+        file_paths = sorted([file for ext in IMAGE_EXTENSIONS for file in folder.glob(f'*.{ext}')])
+        if max_samples is not None:
+            file_paths = file_paths[:max_samples]
+        return [Image.open(f).convert('RGB') for f in file_paths]
+
+    # If you pass .npz for either path, PR can't be computed from only mu/sigma
+    if str(path_real).endswith(".npz") or str(path_fake).endswith(".npz"):
+        raise ValueError("Precision/Recall requires image samples, not only .npz statistics (mu/sigma).")
+
+    real_imgs = _load_images_from_folder(path_real)
+    fake_imgs = _load_images_from_folder(path_fake)
+
+    act_real = get_activations(real_imgs, model, batch_size=batch_size, dims=dims, device=device, num_workers=num_workers)
+    act_fake = get_activations(fake_imgs, model, batch_size=batch_size, dims=dims, device=device, num_workers=num_workers)
+
+    precision, recall = calculate_precision_recall_from_activations(
+        act_real, act_fake, k=k, device=device, batch_size_dist=pr_dist_batch_size
+    )
+
+    return fid_value, precision, recall

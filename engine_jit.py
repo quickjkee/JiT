@@ -15,7 +15,7 @@ import util.misc as misc
 import util.lr_sched as lr_sched
 import copy
 
-from util.fid import calculate_fid
+from util.fid import calculate_fid, calculate_fid_precision_recall
 from torchvision.transforms import Normalize
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from PIL import Image
@@ -180,10 +180,11 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, do_
             fid_statistics_file = 'fid_stats/jit_in512_stats.npz'
         else:
             raise NotImplementedError
-        fid = calculate_fid(save_folder, fid_statistics_file, inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth')
+        fid, precision, recall = calculate_fid_precision_recall(save_folder, fid_statistics_file, max_samples=5000,
+                                                                inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth')                                                           
         postfix = "_cfg{}_res{}".format(model_without_ddp.cfg_scale, args.img_size)
         log_writer.add_scalar('fid{}'.format(postfix), fid, epoch)
-        print("FID: {:.4f}".format(fid))
+        print("FID: {:.4f}".format(fid), "Precision: {:.4f}".format(precision), "Recall: {:.4f}".format(recall))
         shutil.rmtree(save_folder)
 
     torch.distributed.barrier()
