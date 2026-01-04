@@ -154,14 +154,14 @@ class MCD_x0(nn.Module):
 
         scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
         delta_target = (x0_boundary_target - x0_pred_start) / scale.clamp_min(1e-4)
-        
+
         t_ = t_start.view(-1).clamp(self.t_eps, 1 - self.t_eps)
         snr = (t_ * t_) / ((1 - t_) * (1 - t_))
         w_t = torch.minimum(snr, torch.tensor(10.0, device=t_.device, dtype=t_.dtype))  # gamma=10
         dt = (t_boundary - t_start).view(-1).abs()
         w_seg = 1.0 / (dt + 1e-3)
         w = w_t * w_seg
-        loss = huber_loss(delta_pred, delta_target, w=w, t=t_start.flatten())
+        loss = huber_loss(delta_pred, delta_target, w=w)
         return loss
 
     @torch.no_grad()
