@@ -147,12 +147,12 @@ class MCD_x0(nn.Module):
             x0_pred_next = z_next + v_pred_next * (1 - t_next)
             target_fn = self.net if ema_model is None else ema_model.net
             delta_target = target_fn(x0_pred_next, t_next.flatten(), labels)
-            scale = (t_boundary - t_next) #/ (1 - t_next).clamp_min(self.t_eps)
+            scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
             x0_boundary_target = x0_pred_next + scale * delta_target
             boundary_mask = (t_next - t_boundary).abs() < 1e-6
             x0_boundary_target = torch.where(boundary_mask, x0_pred_next, x0_boundary_target)
 
-        scale = (t_boundary - t_start) #/ (1 - t_start).clamp_min(self.t_eps)
+        scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
         delta_target = (x0_boundary_target - x0_pred_start) / scale.clamp_min(1e-4)
 
         loss = huber_loss(delta_pred, delta_target)
@@ -176,7 +176,7 @@ class MCD_x0(nn.Module):
                                        model=self.net_teacher, return_v=True)
                 z = z + v * (1 - t)     
             z_ = self.net(z, t.flatten(), labels)
-            scale = (t_next - t)  #/ (1 - t).clamp_min(self.t_eps)
+            scale = (t_next - t)  / (1 - t).clamp_min(self.t_eps)
             z = z + scale * z_
 
         return z.to(t.dtype)
