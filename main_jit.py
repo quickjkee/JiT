@@ -189,7 +189,7 @@ def main(args):
     checkpoint_path = args.resume if args.resume else None
     if checkpoint_path and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        model.load_state_dict(checkpoint['model'], strict=False)
+        model.load_state_dict(checkpoint['model_ema1'], strict=False)
         print("Resumed checkpoint from", args.resume)
     model.create_teacher()
 
