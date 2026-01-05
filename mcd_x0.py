@@ -147,21 +147,15 @@ class MCD_x0(nn.Module):
             x0_pred_next = z_next + v_pred_next * (1 - t_next)
             target_fn = self.net if ema_model is None else ema_model.net
             delta_target = target_fn(x0_pred_next, t_next.flatten(), labels)
-            scale = (t_boundary - t_next) / (1 - t_next).clamp_min(self.t_eps)
+            scale = (t_boundary - t_next) #/ (1 - t_next).clamp_min(self.t_eps)
             x0_boundary_target = x0_pred_next + scale * delta_target
             boundary_mask = (t_next - t_boundary).abs() < 1e-6
             x0_boundary_target = torch.where(boundary_mask, x0_pred_next, x0_boundary_target)
 
-        scale = (t_boundary - t_start) / (1 - t_start).clamp_min(self.t_eps)
+        scale = (t_boundary - t_start) #/ (1 - t_start).clamp_min(self.t_eps)
         delta_target = (x0_boundary_target - x0_pred_start) / scale.clamp_min(1e-4)
 
-        t_ = t_start.view(-1).clamp(self.t_eps, 1 - self.t_eps)
-        snr = (t_ * t_) / ((1 - t_) * (1 - t_))
-        w_t = torch.minimum(snr, torch.tensor(10.0, device=t_.device, dtype=t_.dtype))  # gamma=10
-        dt = (t_boundary - t_start).view(-1).abs()
-        w_seg = 1.0 / (dt + 1e-3)
-        w = w_t * w_seg
-        loss = huber_loss(delta_pred, delta_target, w=w)
+        loss = huber_loss(delta_pred, delta_target)
         return loss
 
     @torch.no_grad()
@@ -182,7 +176,7 @@ class MCD_x0(nn.Module):
                                        model=self.net_teacher, return_v=True)
                 z = z + v * (1 - t)     
             z_ = self.net(z, t.flatten(), labels)
-            scale = (t_next - t) / (1 - t).clamp_min(self.t_eps)
+            scale = (t_next - t)  #/ (1 - t).clamp_min(self.t_eps)
             z = z + scale * z_
 
         return z.to(t.dtype)
