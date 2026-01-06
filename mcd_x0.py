@@ -96,13 +96,19 @@ class MCD_x0(nn.Module):
         self.cfg_interval = (args.interval_min, args.interval_max)
 
         # distillation hyper params
-        self.timesteps = torch.linspace(0.0, 1.0, self.steps+1)
+        self.timesteps = torch.linspace(0.0, 1.0, self.steps + 1)
         self.timesteps_end = self.timesteps[1:]
         self.timesteps_start = self.timesteps[:-1]
-        intervals = torch.chunk(self.timesteps, args.num_boundaries)
-        self.boundaries = torch.tensor(
-                        [interval[0] for interval in intervals] + [intervals[-1][-1]]
-                    )
+
+        K = args.num_boundaries  # e.g. 4
+        t_eps = args.t_eps
+
+        # power schedule (try p=2.0 first; if too aggressive, try p=1.5)
+        p = 1.4305
+        boundaries = (torch.linspace(0.0, 1.0, K + 1) ** p).clamp(t_eps, 1.0 - t_eps)
+        boundaries[0] = t_eps
+        boundaries[-1] = 1.0 - t_eps
+        self.boundaries = boundaries
 
     def create_teacher(self):
         self.net_teacher = copy.deepcopy(self.net).eval()
