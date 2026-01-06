@@ -101,7 +101,7 @@ class MCD_x0(nn.Module):
         self.timesteps_start = self.timesteps[:-1]
 
         K = args.num_boundaries  # e.g. 4
-        t_eps = args.t_eps
+        t_eps = 0.0
 
         # power schedule (try p=2.0 first; if too aggressive, try p=1.5)
         p = 1.4305
