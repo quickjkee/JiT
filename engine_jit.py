@@ -23,12 +23,15 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 
+MEAN = torch.tensor(IMAGENET_DEFAULT_MEAN).view(1,3,1,1)
+STD  = torch.tensor(IMAGENET_DEFAULT_STD).view(1,3,1,1)
+
 
 def unpack_batch(batch, device, case='JiT'):
     x, y = batch
     x.to(torch.float32)
     x = x / 255. 
-    x = x * 2.0 - 1.0
+    x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
     y = y.to(device, non_blocking=True).long()
     return x, y
 
@@ -130,9 +133,9 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
 
         torch.distributed.barrier()
 
-        # denormalize images
-        sampled_images = (sampled_images + 1) / 2
-        sampled_images = sampled_images.detach().cpu()
+        # denormalize images 
+        sampled_images = sampled_images * STD + MEAN
+        sampled_images = sampled_images.clamp(0.0, 1.0).detach().cpu()
 
         # distributed save images
         for b_id in range(sampled_images.size(0)):

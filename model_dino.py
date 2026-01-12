@@ -10,20 +10,17 @@
 import math
 import logging
 
-import numpy as np
-import copy
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
-import os, torch, torch.distributed as dist
 
 from util.model_util import RMSNorm
-from math import exp
 from model_jit import JiTBlock, VisionRotaryEmbeddingFast
-import torch.nn.functional as F
-from torchvision.transforms import Normalize
 from collections import OrderedDict
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from omegaconf import OmegaConf
+
+from yrDinoV2.dinov2.configs import dinov2_default_config
+from yrDinoV2.dinov2.models import build_model_from_cfg
 
 logger = logging.getLogger("dinov2")
 
@@ -33,18 +30,6 @@ logger = logging.getLogger("dinov2")
 ########################################################################################################################
 #                                              MODEL DEFINITIONS                                                       #
 ########################################################################################################################
-
-
-def modulate(x, shift, scale):
-    if len(x.shape) != len(shift.shape):
-        scale, shift = scale.unsqueeze(1), shift.unsqueeze(1)
-    return x * (1 + scale) + shift
-
-def gate_fn(x, gate):
-    if len(x.shape) != len(gate.shape):
-        gate = gate.unsqueeze(1)
-    return gate * x
-
 
 class TimestepEmbedder(nn.Module):
     """
@@ -100,76 +85,8 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-class BlockWithAdaLN(nn.Module):
-    def __init__(self, blk, dim, cond_dim):
-        super().__init__()
-
-        # Reuse the exact submodules/attrs from blk
-        self.norm1 = blk.norm1
-        self.attn  = blk.attn
-        self.ls1   = blk.ls1
-        self.drop_path1 = blk.drop_path1
-
-        self.norm2 = blk.norm2
-        self.mlp   = blk.mlp
-        self.ls2   = blk.ls2
-
-        self.sample_drop_ratio = getattr(blk, "sample_drop_ratio", 0.0)
-
-        # AdaLN params
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(cond_dim, 6 * dim, bias=True),
-        )
-        nn.init.zeros_(self.adaLN_modulation[1].weight)
-        nn.init.zeros_(self.adaLN_modulation[1].bias)
-
-    def _weighting_fn(self, t):
-        def exp_(x, k=5):
-            return 1 - torch.exp(-k * x)
-
-        def curve(x, k=16.1118962790027, a=5.61244287988436):
-            x = torch.clip(x, 0, 1)
-            return (1 - torch.exp(-k * x**a)) / (1 - exp(-k)) 
-
-        w = curve(t)
-        return w.unsqueeze(1).unsqueeze(2)
-
-    def forward(self, x, c=None, weights=None):
-        B, N, D = x.shape
-
-        if c is None:
-            zeros = torch.zeros(B, D, device=x.device, dtype=x.dtype)
-            ones  = torch.ones(B, D, device=x.device, dtype=x.dtype)
-            shift_msa = zeros; scale_msa = zeros; gate_msa = ones
-            shift_mlp = zeros; scale_mlp = zeros; gate_mlp = ones
-            w = 1
-        else:
-            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
-                self.adaLN_modulation(c).chunk(6, dim=-1)
-            w = self._weighting_fn(weights)
-
-        x_norm = self.norm1(x)
-        x_mod_msa = modulate(x_norm, shift_msa, scale_msa)
-        x_mod_msa = (1 - w) * x_mod_msa + w * x_norm 
-        attn_out = self.attn(x_mod_msa)
-
-        attn_out_gate_msa = gate_fn(attn_out, gate_msa)
-        attn_out_gate_msa = (1 - w) * attn_out_gate_msa + w * attn_out
-        x = x + self.drop_path1(self.ls1(attn_out_gate_msa))
-
-        x_norm = self.norm2(x)
-        x_mod_mlp = modulate(x_norm, shift_mlp, scale_mlp)
-        x_mod_mlp = (1 - w) * x_mod_mlp + w * x_norm
-        mlp_out  = self.mlp(x_mod_mlp)
-
-        mlp_out_gate_mlp = gate_fn(mlp_out, gate_mlp)
-        mlp_out_gate_mlp = (1 - w) * mlp_out_gate_mlp + w * mlp_out
-        x = x + self.drop_path1(self.ls2(mlp_out_gate_mlp)) 
-        
-        return x
-
-
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 class FinalLayer(nn.Module):
     """
@@ -233,14 +150,8 @@ class DinoJiT(nn.Module):
         in_context_len=32,
         bottleneck_dim=128,
         in_context_start=8,
-        do_decoder=True,
-        do_adaln_encoder=True,
-        do_repa=True
     ):
         super().__init__()
-
-        self.dino_model = dino_model
-        self.dino_model.requires_grad_(False)
 
         self.hidden_size = self.dino_model.embed_dim
         self.num_classes = num_classes
@@ -249,39 +160,39 @@ class DinoJiT(nn.Module):
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
         self.out_channels = 3
-        self.do_decoder = do_decoder
-        self.do_adaln_encoder = do_adaln_encoder
-        self.do_repa = do_repa
+
+        self.dino_model = dino_model
+        self.dino_model.requires_grad_(False)
+        for block in dino_model.blocks[-6:]:
+            for p in block.parameters():
+                p.requires_grad = True
+        self.dino_model.norm.requires_grad_(True)
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, self.hidden_size)
 
-        if self.do_adaln_encoder:
-            self.encoder_blocks = nn.ModuleList([BlockWithAdaLN(b, self.hidden_size, self.hidden_size) for b in self.dino_model.blocks])
-        else:
-            self.encoder_blocks = self.dino_model.blocks
-            for block in dino_model.blocks[-6:]:
-                for p in block.parameters():
-                    p.requires_grad = True
-            self.dino_model.norm.requires_grad_(True)
-
+        # rope
         half_head_dim = self.hidden_size // num_heads // 2
         hw_seq_len = self.input_size // self.patch_size
+        self.feat_rope = VisionRotaryEmbeddingFast(
+            dim=half_head_dim,
+            pt_seq_len=hw_seq_len,
+            num_cls_token=0
+        )
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=1 + self.dino_model.num_register_tokens
+            num_cls_token=1 + self.in_context_len
         )
 
-        if self.do_decoder:
-            self.decoder_blocks = nn.ModuleList([
+        # decoder
+        self.decoder_blocks = nn.ModuleList([
                 JiTBlock(self.hidden_size, num_heads, mlp_ratio=mlp_ratio,
                         attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
                         proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
                 for i in range(depth)
             ])
-
         self.final_layer = FinalLayer(self.hidden_size, patch_size, self.out_channels)
         
         self.initialize_weights()
@@ -305,10 +216,9 @@ class DinoJiT(nn.Module):
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
         # Zero-out adaLN modulation layers:
-        if self.do_decoder:
-            for block in self.decoder_blocks:
-                nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
-                nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+        for block in self.decoder_blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
@@ -332,86 +242,66 @@ class DinoJiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y, do_repa=False, drop_mid=False):
+    def forward(self, x, t, y, drop_mid=False):
         """
         x: (N, C, H, W)
         t: (N,)
         y: (N,)
         """
-        # DINOv2 input specific
-        # -----------------------------------------
-        x = F.interpolate(
-            x, size=(224, 224), mode="bicubic", align_corners=False
-        )
-        x = (x + 1.0) * 0.5          # [-1,1] → [0,1]
-        x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-        # -----------------------------------------
-
         # Start embedding
         # -----------------------------------------
-        x_in = self.dino_model.prepare_tokens_with_masks(x, None)
-
-        if t is not None and y is not None:
-            t_emb = self.t_embedder(t)
-            y_emb = self.y_embedder(y)
-            c = t_emb + y_emb
-        elif t is None and y is None:
-            c = None
-            t_emb = None
-        else:
-            print('Wrong combination of t, y')
+        t_emb = self.t_embedder(t)
+        y_emb = self.y_embedder(y)
+        c = t_emb + y_emb
         # -----------------------------------------
 
         # Encoder part
         # -----------------------------------------
-        x = x_in
-        for _, block in enumerate(self.encoder_blocks):
-            x = block(x, t_emb, weights=t) if self.do_adaln_encoder else block(x)
-        x = self.dino_model.norm(x)
-
-        if (t is None and y is None) or drop_mid:
-            return x[:, 1 + self.dino_model.num_register_tokens :], x[:, 0] 
+        x = self.dino_model.forward_features(x, class_idxs=y, t=1 - t, noise=1)
+        if drop_mid:
+            return x[:, 0] 
         # -----------------------------------------
 
         # Decoder part
         # -----------------------------------------
-        x_mid = x.clone()
-        x = x_in
-        if self.do_decoder:
-            for _, block in enumerate(self.decoder_blocks):
-                x = block(x, c, feat_rope=self.feat_rope_incontext, context=x_mid)
-        x = self.unpatchify(self.final_layer(x[:, 1 + self.dino_model.num_register_tokens :], c), self.patch_size)
+        for i, block in enumerate(self.blocks):
+            # in-context
+            if self.in_context_len > 0 and i == self.in_context_start:
+                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                in_context_tokens += self.in_context_posemb
+                x = torch.cat([in_context_tokens, x], dim=1)
+            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        if do_repa:
-            x_mid = x_mid[:, 1 + self.dino_model.num_register_tokens :]
-            N, T, D = x_mid.shape
-            x_mid = x_mid
-
-        output = x if not do_repa else (x, x_mid)
+        x = x[:, 1 + self.in_context_len:]
+        x = self.final_layer(x, c)
+        output = self.unpatchify(x, self.patch_size)
         # -----------------------------------------
 
         return output
 
 
 def load_checkpoint(model, path):
-    state_dict = torch.load(path, map_location="cpu", weights_only=False)
-    old_state_dict = state_dict["model"]  # or whatever key holds it
-    
+    state_dict = torch.load(path, map_location="cpu", weights_only=False)['teacher']
     new_state_dict = OrderedDict()
-    for k, v in old_state_dict.items():
-        if k.startswith("net."):
-            k = k[len("net."):]
+    for k, v in state_dict.items():
+        if k.startswith("backbone."):
+            k = k[len("backbone."):]
         new_state_dict[k] = v
     model.load_state_dict(new_state_dict, strict=False)
     print('loaded')
     return model
     
 
-def DinoJiT_B_16(model_path='../checkpoint_dino/checkpoint-last.pth', **kwargs):
-    dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", trust_repo=True, force_reload=False)
-    dinojit = DinoJiT(dino_model=dinov2_vitb14, depth=8, num_heads=12,
-                   in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
-    dinojit = load_checkpoint(dinojit, model_path)
+def DinoJiT_B_16(model_path='checkpoints/eval/training_240000/teacher_checkpoint.pth', **kwargs):
+    default_cfg = OmegaConf.create(dinov2_default_config)
+    config_file = 'configs/vitb14_noisy_pretrained_dinov2_low_lr.yaml'
+    cfg = OmegaConf.load(config_file)
+    cfg = OmegaConf.merge(default_cfg, cfg) 
+
+    _, teacher_backbone, _ = build_model_from_cfg(cfg)
+    dino_model = load_checkpoint(teacher_backbone, model_path)
+    dinojit = DinoJiT(dino_model=dino_model, depth=8, num_heads=12,
+                      in_context_len=32, in_context_start=4, patch_size=14, **kwargs)
     return dinojit
 
 
