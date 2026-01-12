@@ -153,7 +153,7 @@ class DinoJiT(nn.Module):
     ):
         super().__init__()
 
-        self.hidden_size = self.dino_model.embed_dim
+        self.hidden_size = dino_model.embed_dim
         self.num_classes = num_classes
         self.patch_size = patch_size
         self.input_size = input_size
@@ -162,11 +162,11 @@ class DinoJiT(nn.Module):
         self.out_channels = 3
 
         self.dino_model = dino_model
-        self.dino_model.requires_grad_(False)
-        for block in dino_model.blocks[-6:]:
-            for p in block.parameters():
-                p.requires_grad = True
-        self.dino_model.norm.requires_grad_(True)
+        self.dino_model.requires_grad_(True)
+        #for block in dino_model.blocks[-6:]:
+        #    for p in block.parameters():
+        #        p.requires_grad = True
+        #self.dino_model.norm.requires_grad_(True)
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
@@ -178,13 +178,17 @@ class DinoJiT(nn.Module):
         self.feat_rope = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=0
+            num_cls_token=1
         )
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
             num_cls_token=1 + self.in_context_len
         )
+        # in-context cls token
+        if self.in_context_len > 0:
+            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, self.hidden_size), requires_grad=True)
+            torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
         # decoder
         self.decoder_blocks = nn.ModuleList([
@@ -258,13 +262,15 @@ class DinoJiT(nn.Module):
         # Encoder part
         # -----------------------------------------
         x = self.dino_model.forward_features(x, class_idxs=y, t=1 - t, noise=1)
+        x_cls, x = x["x_norm_clstoken"], x["x_norm_patchtokens"]
+        x = torch.cat([x_cls, x], dim=1)
         if drop_mid:
-            return x[:, 0] 
+            return x_cls
         # -----------------------------------------
 
         # Decoder part
         # -----------------------------------------
-        for i, block in enumerate(self.blocks):
+        for i, block in enumerate(self.decoder_blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
@@ -292,14 +298,17 @@ def load_checkpoint(model, path):
     return model
     
 
-def DinoJiT_B_16(model_path='checkpoints/eval/training_240000/teacher_checkpoint.pth', **kwargs):
+def DinoJiT_B_16(dino_trained_path='checkpoints/eval/training_240000/teacher_checkpoint.pth',
+                 dino_init_path='checkpoints/dinov2_vitb14_pretrain.pth',
+                 **kwargs):
     default_cfg = OmegaConf.create(dinov2_default_config)
     config_file = 'configs/vitb14_noisy_pretrained_dinov2_low_lr.yaml'
     cfg = OmegaConf.load(config_file)
     cfg = OmegaConf.merge(default_cfg, cfg) 
+    cfg.MODEL.PRETRAINED = dino_init_path
 
     _, teacher_backbone, _ = build_model_from_cfg(cfg)
-    dino_model = load_checkpoint(teacher_backbone, model_path)
+    dino_model = load_checkpoint(teacher_backbone, dino_trained_path)
     dinojit = DinoJiT(dino_model=dino_model, depth=8, num_heads=12,
                       in_context_len=32, in_context_start=4, patch_size=14, **kwargs)
     return dinojit

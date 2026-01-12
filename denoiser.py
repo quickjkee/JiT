@@ -1,14 +1,9 @@
 from ast import arg
 import torch
 import torch.nn as nn
-import copy
 import torch.nn.functional as F
-from math import exp
 from model_jit import JiT_models
 from model_dino import DinoJiT_models
-from model_dinov3 import DINOv3JiT_models
-from torchvision.transforms import Normalize
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 def print_trainable(model):
@@ -61,7 +56,8 @@ class Denoiser(nn.Module):
                 input_size=args.img_size,
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
-                model_path=args.model_path
+                dino_trained_path=args.dino_trained_path,
+                dino_init_path=args.dino_init_path
             )
         else:
             self.net = JiT_models[args.model](
