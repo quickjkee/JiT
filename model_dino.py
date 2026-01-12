@@ -263,7 +263,7 @@ class DinoJiT(nn.Module):
         # -----------------------------------------
         x = self.dino_model.forward_features(x, class_idxs=y, t=1 - t, noise=1)
         x_cls, x = x["x_norm_clstoken"], x["x_norm_patchtokens"]
-        x = torch.cat([x_cls, x], dim=1)
+        x = torch.cat([x_cls.unsqueeze(1), x], dim=1)
         if drop_mid:
             return x_cls
         # -----------------------------------------
