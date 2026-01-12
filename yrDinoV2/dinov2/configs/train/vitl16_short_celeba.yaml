@@ -1,0 +1,10 @@
+# this corresponds to the default config
+train:
+  dataset: "celebA"
+  batch_size_per_gpu: 64
+crops:
+  global_crops_size: 256
+optim:
+  epochs: 250
+student:
+  block_chunks: 4

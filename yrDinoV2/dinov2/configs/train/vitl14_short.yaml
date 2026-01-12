@@ -1,0 +1,10 @@
+train:
+  batch_size_per_gpu: 32
+student:
+  arch: vit_large
+  patch_size: 14
+  block_chunks: 4
+optim:
+  epochs: 200
+crops:
+  local_crops_size: 98
