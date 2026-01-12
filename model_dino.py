@@ -163,6 +163,7 @@ class DinoJiT(nn.Module):
 
         self.dino_model = dino_model
         self.dino_model.requires_grad_(True)
+        self.dino_model.mask_token.requires_grad_(False)
         #for block in dino_model.blocks[-6:]:
         #    for p in block.parameters():
         #        p.requires_grad = True
