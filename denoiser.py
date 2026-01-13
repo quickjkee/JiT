@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from model_jit import JiT_models
 from model_dino import DinoJiT_models
+from torchvision.transforms import Normalize
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 def print_trainable(model):
@@ -101,7 +103,7 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, x, labels):
+    def forward(self, x, labels, do_normalize=False):
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
@@ -109,8 +111,14 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred = self.net(z, t.flatten(), labels_dropped)
-        v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
+        if do_normalize:
+            x_norm = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)((x + 1.0) * 0.5)
+            z_norm = t * x_norm + (1 - t) * e
+            x_pred =  self.net(z_norm, t.flatten(), labels_dropped)
+            v_pred = (x_pred - z_norm) / (1 - t).clamp_min(self.t_eps)
+        else:
+            x_pred = self.net(z, t.flatten(), labels_dropped)
+            v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
 
         return loss

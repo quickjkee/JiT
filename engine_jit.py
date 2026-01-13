@@ -29,14 +29,9 @@ STD  = torch.tensor(IMAGENET_DEFAULT_STD).view(1,3,1,1)
 
 def unpack_batch(batch, device, case='JiT'):
     x, y = batch
-    if 'Dino' in case:
-        x = x.to(device, non_blocking=True).to(torch.float32) / 255.0
-        x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-        y = y.to(device, non_blocking=True).long()
-    else:
-        x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
-        x = x * 2.0 - 1.0
-        y = y.to(device, non_blocking=True)
+    x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
+    x = x * 2.0 - 1.0
+    y = y.to(device, non_blocking=True)
     return x, y
 
 
@@ -60,7 +55,8 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(x, labels)
+            loss = model(x, labels, 
+                         do_normalize=True if 'Dino' in args.model else False)
 
         loss_value = loss.item()
         if not math.isfinite(loss_value):
@@ -140,12 +136,8 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
         torch.distributed.barrier()
 
         # denormalize images 
-        if 'Dino' in args.model:
-            sampled_images = sampled_images * STD + MEAN
-            sampled_images = sampled_images.clamp(0.0, 1.0).detach().cpu()
-        else:
-            sampled_images = (sampled_images + 1) / 2
-            sampled_images = sampled_images.detach().cpu()
+        sampled_images = (sampled_images + 1) / 2
+        sampled_images = sampled_images.detach().cpu()
 
         # distributed save images
         for b_id in range(sampled_images.size(0)):

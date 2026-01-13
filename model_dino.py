@@ -163,10 +163,10 @@ class DinoJiT(nn.Module):
 
         self.dino_model = dino_model
         self.dino_model.requires_grad_(False)
-        for block in dino_model.blocks[-4:]:
-            for p in block.parameters():
-                p.requires_grad = True
-        self.dino_model.norm.requires_grad_(True)
+        #for block in dino_model.blocks[-4:]:
+        #    for p in block.parameters():
+        #        p.requires_grad = True
+        #self.dino_model.norm.requires_grad_(True)
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
