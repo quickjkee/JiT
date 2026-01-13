@@ -111,14 +111,8 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        if do_normalize:
-            x_norm = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)((x + 1.0) * 0.5)
-            z_norm = t * x_norm + (1 - t) * e
-            x_pred =  self.net(z_norm, t.flatten(), labels_dropped)
-            v_pred = (x_pred - z_norm) / (1 - t).clamp_min(self.t_eps)
-        else:
-            x_pred = self.net(z, t.flatten(), labels_dropped)
-            v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
+        x_pred = self.net(z, t.flatten(), labels_dropped)
+        v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
 
         return loss
