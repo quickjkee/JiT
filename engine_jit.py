@@ -28,14 +28,12 @@ STD  = torch.tensor(IMAGENET_DEFAULT_STD).view(1,3,1,1)
 
 
 def unpack_batch(batch, device, case='JiT'):
+    x, y = batch
     if 'Dino' in case:
-        x, y = batch
-        x.to(torch.float32)
-        x = x / 255. 
+        x = x.to(device, non_blocking=True).to(torch.float32) / 255.0
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
         y = y.to(device, non_blocking=True).long()
     else:
-        x, y = batch
         x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
         x = x * 2.0 - 1.0
         y = y.to(device, non_blocking=True)
