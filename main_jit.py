@@ -16,7 +16,7 @@ import util.misc as misc
 
 import copy
 from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
-
+from overfit_experiment import run_overfit
 from denoiser import Denoiser
 
 
@@ -110,6 +110,18 @@ def get_args_parser():
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='URL used to set up distributed training')
+
+    # overfit experiment
+    parser.add_argument('--overfit', action='store_true', help='Run tiny overfit experiment instead of full training')
+    parser.add_argument('--overfit_n', type=int, default=16, help='Number of images in overfit subset')
+    parser.add_argument('--overfit_steps', type=int, default=3000, help='Number of optimizer steps for overfit run')
+    parser.add_argument('--overfit_t', type=float, default=0.8, help='Fixed timestep for overfit test')
+    parser.add_argument('--overfit_batch_size', type=int, default=16, help='Batch size for overfit run')
+    parser.add_argument('--overfit_print_freq', type=int, default=50, help='Print/log every N steps')
+    parser.add_argument('--overfit_use_ema', action='store_true', help='Update EMA during overfit (off by default)')
+    parser.add_argument('--overfit_save_imgs', action='store_true', help='Save reconstructions during overfit')
+    parser.add_argument('--overfit_img_freq', type=int, default=200, help='Save images every N steps')
+
 
     return parser
 
@@ -218,6 +230,21 @@ def main(args):
             torch.manual_seed(seed)
             with torch.no_grad():
                 evaluate(model_without_ddp, args, 0, batch_size=args.gen_bsz, log_writer=log_writer)
+        return
+
+    # Toy overfit experiment
+    if args.overfit:
+        if misc.is_main_process():
+            print("Running OVERFIT experiment (tiny subset) ...")
+
+        run_overfit(
+            args=args,
+            model=model,
+            model_without_ddp=model_without_ddp,
+            optimizer=optimizer,
+            device=device,
+            log_writer=log_writer
+        )
         return
 
     # Training loop
