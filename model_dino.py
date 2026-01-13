@@ -163,14 +163,14 @@ class DinoJiT(nn.Module):
 
         self.dino_model = dino_model
         self.dino_model.requires_grad_(False)
-        #for block in dino_model.blocks[-4:]:
-        #    for p in block.parameters():
-        #        p.requires_grad = True
-        #self.dino_model.norm.requires_grad_(True)
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(self.hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, self.hidden_size)
+
+        # x embed
+        self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, self.out_channels, bottleneck_dim, self.hidden_size, bias=True)
+        self.raw_norm = RMSNorm(self.hidden_size)
 
         # rope
         half_head_dim = self.hidden_size // num_heads // 2
@@ -246,7 +246,7 @@ class DinoJiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y, drop_mid=False):
+    def forward(self, z, t, y, drop_mid=False):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -261,7 +261,7 @@ class DinoJiT(nn.Module):
 
         # Encoder part
         # -----------------------------------------
-        x = self.dino_model.forward_features(x, class_idxs=y, t=1 - t, noise=1)
+        x = self.dino_model.forward_features(z, class_idxs=y, t=1 - t, noise=1)
         x_cls, x = x["x_norm_clstoken"], x["x_norm_patchtokens"]
         x = torch.cat([x_cls.unsqueeze(1), x], dim=1)
         if drop_mid:
@@ -270,6 +270,10 @@ class DinoJiT(nn.Module):
 
         # Decoder part
         # -----------------------------------------
+        x_raw = self.x_embedder(z) 
+        x_raw = torch.cat([torch.zeros_like(x_raw[:, :1]), x_raw], dim=1)
+        x = x + self.raw_norm(x_raw)
+
         for i, block in enumerate(self.decoder_blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:

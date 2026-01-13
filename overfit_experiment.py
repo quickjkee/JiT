@@ -31,6 +31,26 @@ def _unpack_batch_normalized(batch, device):
 
 
 @torch.no_grad()
+def _save_original_images(x_norm, outdir, max_n=16):
+    """
+    Save original (clean) images from normalized space.
+    x_norm: ImageNet-normalized images [B,3,H,W]
+    """
+    os.makedirs(outdir, exist_ok=True)
+
+    mean = torch.tensor(IMAGENET_DEFAULT_MEAN, device=x_norm.device).view(1, 3, 1, 1)
+    std = torch.tensor(IMAGENET_DEFAULT_STD, device=x_norm.device).view(1, 3, 1, 1)
+
+    imgs = (x_norm * std + mean).clamp(0, 1).cpu()
+
+    import imageio.v2 as imageio
+    n = min(imgs.size(0), max_n)
+    for i in range(n):
+        im = (imgs[i].permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
+        imageio.imwrite(os.path.join(outdir, f"000_{i:02d}.png"), im)
+
+
+@torch.no_grad()
 def _save_debug_images(x_pred_norm, step, outdir, max_n=16):
     """
     x_pred_norm: ImageNet-normalized images in [B,3,H,W] (float)
@@ -126,6 +146,13 @@ def run_overfit(args, model, model_without_ddp, optimizer, device, log_writer=No
 
         for batch in loader:
             x, y = _unpack_batch_normalized(batch, device)
+            if step == 0 and args.overfit_save_imgs and misc.is_main_process():
+                _save_original_images(
+                    x_norm=x,
+                    outdir=os.path.join(args.output_dir, "overfit_debug", "originals"),
+                    max_n=16
+                )
+
 
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 loss, x_pred = forward_fixed_t(x, y)
