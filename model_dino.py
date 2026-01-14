@@ -185,6 +185,7 @@ class DinoJiT(nn.Module):
             pt_seq_len=hw_seq_len,
             num_cls_token=1 + self.in_context_len
         )
+        
         # in-context cls token
         if self.in_context_len > 0:
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, self.hidden_size), requires_grad=True)
