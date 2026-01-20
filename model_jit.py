@@ -248,6 +248,7 @@ class JiT(nn.Module):
         if self.in_context_len > 0:
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=1e-6)
+            print(f'Doing registers with size {self.in_context_len}')
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
