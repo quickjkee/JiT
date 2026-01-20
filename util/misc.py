@@ -278,7 +278,7 @@ def save_model(args, model_without_ddp, optimizer, epoch, epoch_name=None):
     to_save['model_ema2'] = ema_state_dict2
 
     save_on_master(to_save, checkpoint_path)
-    if is_main_process:
+    if is_main_process():
         copy_out_to_snapshot(output_dir)
 
 
