@@ -17,20 +17,16 @@ import copy
 
 from util.fid import calculate_fid
 from torchvision.transforms import Normalize
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 
-MEAN = torch.tensor(IMAGENET_DEFAULT_MEAN).view(1,3,1,1)
-STD  = torch.tensor(IMAGENET_DEFAULT_STD).view(1,3,1,1)
-
 
 def unpack_batch(batch, device, case='JiT'):
     x, y = batch
     x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
-    x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+    x = x * 2.0 - 1.0
     y = y.to(device, non_blocking=True)
     return x, y
 
@@ -118,8 +114,6 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
     class_label_gen_world = np.arange(0, class_num).repeat(args.num_images // class_num)
     class_label_gen_world = np.hstack([class_label_gen_world, np.zeros(50000)])
 
-    MEAN = torch.tensor(IMAGENET_DEFAULT_MEAN).view(1,3,1,1).cuda()
-    STD  = torch.tensor(IMAGENET_DEFAULT_STD).view(1,3,1,1).cuda()
 
     for i in range(num_steps):
         print("Generation step {}/{}".format(i, num_steps))
@@ -135,8 +129,8 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
         torch.distributed.barrier()
 
         # denormalize images 
-        sampled_images = sampled_images * STD + MEAN
-        sampled_images = sampled_images.clamp(0, 1).detach().cpu()
+        sampled_images = (sampled_images + 1) / 2
+        sampled_images = sampled_images.detach().cpu()
 
         # distributed save images
         for b_id in range(sampled_images.size(0)):
@@ -181,7 +175,6 @@ def evaluate_linear_probing(model, args, device):
             x = x.to(device, dtype=torch.float32)
             y = y.to(device, non_blocking=True)
             x = x / 255.
-            x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
 
             e = torch.randn_like(x) 
             z = t * x + (1 - t) * e
