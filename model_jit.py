@@ -246,7 +246,7 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            self.register_tokens = nn.Parameter(torch.zeros(1, 4, hidden_size), requires_grad=True)
+            self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.register_tokens, std=.02)
             #self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             #torch.nn.init.normal_(self.in_context_posemb, std=.02)
@@ -365,7 +365,7 @@ class JiT(nn.Module):
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, in_context_len=0, in_context_start=0, patch_size=16, **kwargs)
+               bottleneck_dim=128, in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
