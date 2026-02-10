@@ -246,10 +246,10 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            #self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            #torch.nn.init.normal_(self.register_tokens, std=.02)
-            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            torch.nn.init.normal_(self.in_context_posemb, std=.02)
+            self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            torch.nn.init.normal_(self.register_tokens, std=.02)
+            #self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            #torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
@@ -348,9 +348,13 @@ class JiT(nn.Module):
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens += self.in_context_posemb
-                x = torch.cat([in_context_tokens, x], dim=1)
+                #in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                #in_context_tokens += self.in_context_posemb
+                #x = torch.cat([in_context_tokens, x], dim=1)
+                
+                register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
+                x = torch.cat([register_tokens, x], dim=1)
+                
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
@@ -363,7 +367,7 @@ class JiT(nn.Module):
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, in_context_len=0, in_context_start=0, patch_size=16, **kwargs)
+               bottleneck_dim=128, in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
