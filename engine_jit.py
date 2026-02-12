@@ -30,7 +30,7 @@ def unpack_batch(batch, device, args):
     else:
         transform_train = transforms.Compose([
                             transforms.Lambda(np_chw_to_pil),
-                            transforms.Lambda(lambda img: center_crop_arr(img, 256)),
+                            transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
                             transforms.RandomHorizontalFlip(),
                             transforms.PILToTensor()
                         ])
