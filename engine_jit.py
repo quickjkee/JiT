@@ -53,6 +53,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
+    print(len(data_loader))
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         # per iteration (instead of per epoch) lr scheduler
@@ -89,6 +90,9 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
             if data_iter_step % args.log_freq == 0:
                 log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
                 log_writer.add_scalar('lr', lr, epoch_1000x)
+
+        if data_iter_step >= len(data_loader):
+            break
 
 
 def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
