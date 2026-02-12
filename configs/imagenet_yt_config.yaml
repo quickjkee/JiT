@@ -1,0 +1,21 @@
+target: yt_tools.dataloader.IterableDataloader
+params:
+  name: imagenet
+  dataset:
+    target: yt_tools.yt_iterable_dataset.IterableYTDataset
+    params:
+      table: //home/yr/ILSVRC/train
+      yt_proxy: hahn
+      buf_size: 64
+  preprocess:
+    - in_map:
+        image_bytes: image
+      target: yt_tools.processing.process_fns.decode_image_from_bytes
+      out_map: image
+    - in_map:
+        data: label
+      target: yt_tools.processing.process_fns.identity
+      out_map: label
+  non_stackable:
+    - image
+    - label

@@ -1,12 +1,15 @@
 import random
 import numpy as np
 import torch
+import yaml
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from torchvision.transforms import Normalize
 from torchvision.transforms import functional as TF
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from PIL import Image
+from omegaconf import OmegaConf
+from yt_tools.utils import instantiate_from_config
 
 
 class TwoResWrapper(torch.utils.data.Dataset):
@@ -53,6 +56,12 @@ def crop_dinov2(x, resolution):
         ).squeeze(0)  
     return x
 
+def np_chw_to_pil(img: np.ndarray) -> Image.Image:
+    # if channel-first (C,H,W), convert to (H,W,C)
+    if img.ndim == 3 and img.shape[0] in (1, 3, 4) and img.shape[0] != img.shape[-1]:
+        img = np.transpose(img, (1, 2, 0))
+    return Image.fromarray(img)
+
 
 def center_crop_arr(pil_image, image_size):
     """
@@ -82,6 +91,12 @@ def load_ds_train(img_size, ds, flip_p=0.5):
       y:             int label
     """
     return TwoResWrapper(ds, img_size=img_size, flip_p=flip_p)
+
+def create_dataloader(dataloader_config_path: str, batch_size: int, skip_rows=0):
+    with open(dataloader_config_path) as f:
+        dataloader_config = OmegaConf.create(yaml.load(f, Loader=yaml.SafeLoader))
+    dataloader_config["params"]["batch_size"] = batch_size
+    return instantiate_from_config(dataloader_config, skip_rows=skip_rows)
 
 
 

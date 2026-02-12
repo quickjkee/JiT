@@ -16,6 +16,7 @@ import util.lr_sched as lr_sched
 import copy
 
 from util.fid import calculate_fid
+from util.crop import center_crop_arr, np_chw_to_pil
 from torchvision.transforms import Normalize
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
@@ -23,8 +24,18 @@ from tqdm import tqdm
 
 
 
-def unpack_batch(batch, device, case='JiT'):
-    x, y = batch
+def unpack_batch(batch, device, args):
+    if args.data_path.exists():
+        x, y = batch
+    else:
+        transform_train = transforms.Compose([
+                            transforms.Lambda(np_chw_to_pil),
+                            transforms.Lambda(lambda img: center_crop_arr(img, 256)),
+                            transforms.RandomHorizontalFlip(),
+                            transforms.PILToTensor()
+                        ])
+        x = torch.stack([transform_train(img) for img in batch['image']])
+        y = torch.tensor(batch['label'])
     x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
     x = x * 2.0 - 1.0
     y = y.to(device, non_blocking=True)
@@ -47,7 +58,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         # per iteration (instead of per epoch) lr scheduler
         lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
-        x, labels = unpack_batch(batch, device, case=args.model)
+        x, labels = unpack_batch(batch, device, args=args)
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):

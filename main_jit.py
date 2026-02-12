@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
-from util.crop import center_crop_arr
+from util.crop import center_crop_arr, create_dataloader
 import util.misc as misc
 
 import copy
@@ -90,6 +90,8 @@ def get_args_parser():
     # dataset
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
                         help='Path to the dataset')
+    parser.add_argument('--yt_config_path', default='configs/imagenet_yt_config.yaml', type=str,
+                        help='Path to the config of imagenet dataset')
     parser.add_argument('--class_num', default=1000, type=int)
 
     # checkpointing
@@ -151,27 +153,31 @@ def main(args):
         log_writer = None
 
     # Data augmentation transforms
-    transform_train = transforms.Compose([
-                          transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
-                          transforms.RandomHorizontalFlip(),
-                          transforms.PILToTensor()
-                        ])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
-    print(dataset_train)
+    if args.data_path.exists():
+        transform_train = transforms.Compose([
+                            transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
+                            transforms.RandomHorizontalFlip(),
+                            transforms.PILToTensor()
+                            ])
+        dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+        print(dataset_train)
 
-    sampler_train = torch.utils.data.DistributedSampler(
-        dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-    )
-    print("Sampler_train =", sampler_train)
+        sampler_train = torch.utils.data.DistributedSampler(
+            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+        )
+        print("Sampler_train =", sampler_train)
 
-    data_loader_train = torch.utils.data.DataLoader(
-        dataset_train, sampler=sampler_train,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-        persistent_workers=True,
-    )
+        data_loader_train = torch.utils.data.DataLoader(
+            dataset_train, sampler=sampler_train,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_mem,
+            drop_last=True,
+            persistent_workers=True,
+        )
+    else:
+        data_loader_train = create_dataloader(args.yt_config_path, args.batch_size)
+
 
     torch._dynamo.config.cache_size_limit = 128
     torch._dynamo.config.optimize_ddp = False
@@ -251,7 +257,7 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
+        if args.distributed and args.data_path.exists():
             data_loader_train.sampler.set_epoch(epoch)
 
         train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
