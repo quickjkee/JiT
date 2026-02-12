@@ -153,7 +153,7 @@ def main(args):
         log_writer = None
 
     # Data augmentation transforms
-    if args.data_path.exists():
+    if os.path.exists(args.data_path):
         transform_train = transforms.Compose([
                             transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
                             transforms.RandomHorizontalFlip(),
@@ -257,7 +257,7 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed and args.data_path.exists():
+        if args.distributed and os.path.exists(args.data_path):
             data_loader_train.sampler.set_epoch(epoch)
 
         train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)

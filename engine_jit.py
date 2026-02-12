@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 
 def unpack_batch(batch, device, args):
-    if args.data_path.exists():
+    if os.path.exists(args.data_path):
         x, y = batch
     else:
         transform_train = transforms.Compose([
