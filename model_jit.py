@@ -307,6 +307,57 @@ class JiT(nn.Module):
 
         self.initialize_weights()
 
+    def initialize_weights(self):
+        # Initialize transformer layers:
+        def _basic_init(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        self.apply(_basic_init)
+
+        # Initialize (and freeze) pos_embed by sin-cos embedding:
+        pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.x_embedder.num_patches ** 0.5))
+        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+
+        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
+        w1 = self.x_embedder.proj1.weight.data
+        nn.init.xavier_uniform_(w1.view([w1.shape[0], -1]))
+        w2 = self.x_embedder.proj2.weight.data
+        nn.init.xavier_uniform_(w2.view([w2.shape[0], -1]))
+        nn.init.constant_(self.x_embedder.proj2.bias, 0)
+
+        # Initialize label embedding table:
+        nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+
+        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
+        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
+
+        # Zero-out adaLN modulation layers:
+        for block in self.blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+
+        # Zero-out output layers:
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
+
+        nn.init.constant_(self.final_layer.linear.weight, 0)
+        nn.init.constant_(self.final_layer.linear.bias, 0)
+
+    def unpatchify(self, x, p):
+        """
+        x: (N, T, patch_size**2 * C)
+        imgs: (N, H, W, C)
+        """
+        c = self.out_channels
+        h = w = int(x.shape[1] ** 0.5)
+        assert h * w == x.shape[1]
+
+        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
+        x = torch.einsum('nhwpqc->nchpwq', x)
+        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
+        return imgs
 
     def forward(self, x, t, y):
         """
@@ -332,7 +383,7 @@ class JiT(nn.Module):
             # insert prefix exactly once
             if self.in_context_len > 0 and i == self.in_context_start:
                 # learned expansion: (B, L*D) -> (B, L, D)
-                ctx = self.y_to_ctx(y_emb).view(B, self.in_context_len, self.hidden_size)
+                ctx = self.y_to_ctx(c).view(B, self.in_context_len, self.hidden_size)
                 # add per-position embedding
                 ctx = ctx + self.in_context_posemb
                 # expand registers: (1, K, D) -> (B, K, D)
