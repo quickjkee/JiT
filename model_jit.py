@@ -202,6 +202,12 @@ class JiTBlock(nn.Module):
         return x
 
 
+# --- PRECISE PATCH: fixes prefix handling + RoPE cls count + posemb shape
+# --- and replaces y_emb.repeat(...) with y_to_ctx(y_emb)
+
+import torch
+import torch.nn as nn
+
 class JiT(nn.Module):
     """
     Just image Transformer.
@@ -220,7 +226,8 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8
+        in_context_start=8,
+        reg_len=8,  # <-- add explicit reg_len
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -232,24 +239,43 @@ class JiT(nn.Module):
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
         self.num_classes = num_classes
+        self.reg_len = reg_len
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, hidden_size)
 
         # linear embed
-        self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, in_channels, bottleneck_dim, hidden_size, bias=True)
+        self.x_embedder = BottleneckPatchEmbed(
+            input_size, patch_size, in_channels, bottleneck_dim, hidden_size, bias=True
+        )
 
-        # use fixed sin-cos embedding
+        # fixed sin-cos embedding
         num_patches = self.x_embedder.num_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
-        # in-context cls token
+        # --- in-context + registers
         if self.in_context_len > 0:
-            self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            torch.nn.init.normal_(self.register_tokens, std=.02)
-            #self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            #torch.nn.init.normal_(self.in_context_posemb, std=.02)
+            # Trainable registers (K tokens)
+            self.register_tokens = nn.Parameter(torch.zeros(1, self.reg_len, hidden_size), requires_grad=True)
+            nn.init.normal_(self.register_tokens, std=0.02)
+
+            # (1, L, D) so it matches (B, L, D)
+            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            nn.init.normal_(self.in_context_posemb, std=0.02)
+
+            # Replace y_emb.repeat(...) with a learned expansion y -> (L tokens)
+            # Outputs (B, L*D) then reshaped to (B, L, D)
+            self.y_to_ctx = nn.Sequential(
+                nn.Linear(hidden_size, 2 * hidden_size),
+                nn.SiLU(),
+                nn.Linear(2 * hidden_size, self.in_context_len * hidden_size),
+            )
+        else:
+            # keep attributes for clarity
+            self.register_tokens = None
+            self.in_context_posemb = None
+            self.y_to_ctx = None
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
@@ -257,12 +283,15 @@ class JiT(nn.Module):
         self.feat_rope = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=0
+            num_cls_token=0,
         )
+
+        # IMPORTANT: cls/prefix tokens AFTER insertion are ctx + regs
+        prefix_len = (self.in_context_len if self.in_context_len > 0 else 0) + (self.reg_len if self.in_context_len > 0 else 0)
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=self.in_context_len
+            num_cls_token=prefix_len,   # <-- FIXED
         )
 
         # transformer
@@ -278,96 +307,55 @@ class JiT(nn.Module):
 
         self.initialize_weights()
 
-    def initialize_weights(self):
-        # Initialize transformer layers:
-        def _basic_init(module):
-            if isinstance(module, nn.Linear):
-                torch.nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-        self.apply(_basic_init)
-
-        # Initialize (and freeze) pos_embed by sin-cos embedding:
-        pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.x_embedder.num_patches ** 0.5))
-        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-
-        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
-        w1 = self.x_embedder.proj1.weight.data
-        nn.init.xavier_uniform_(w1.view([w1.shape[0], -1]))
-        w2 = self.x_embedder.proj2.weight.data
-        nn.init.xavier_uniform_(w2.view([w2.shape[0], -1]))
-        nn.init.constant_(self.x_embedder.proj2.bias, 0)
-
-        # Initialize label embedding table:
-        nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
-
-        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
-        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
-
-        # Zero-out adaLN modulation layers:
-        for block in self.blocks:
-            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
-            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
-
-        # Zero-out output layers:
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-
-        nn.init.constant_(self.final_layer.linear.weight, 0)
-        nn.init.constant_(self.final_layer.linear.bias, 0)
-
-    def unpatchify(self, x, p):
-        """
-        x: (N, T, patch_size**2 * C)
-        imgs: (N, H, W, C)
-        """
-        c = self.out_channels
-        h = w = int(x.shape[1] ** 0.5)
-        assert h * w == x.shape[1]
-
-        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
-        return imgs
 
     def forward(self, x, t, y):
         """
-        x: (N, C, H, W)
-        t: (N,)
-        y: (N,)
+        x: (B, C, H, W)
+        t: (B,)
+        y: (B,)
         """
+        B = x.shape[0]
+
         # class and time embeddings
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
 
-        # forward JiT
-        x = self.x_embedder(x)
-        x += self.pos_embed
+        # patchify
+        x = self.x_embedder(x)          # (B, N, D)
+        x = x + self.pos_embed          # (B, N, D)
+
+        # prefix length (ctx + regs) once inserted
+        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
 
         for i, block in enumerate(self.blocks):
-            # in-context
+            # insert prefix exactly once
             if self.in_context_len > 0 and i == self.in_context_start:
-                #in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                #in_context_tokens += self.in_context_posemb
-                #x = torch.cat([in_context_tokens, x], dim=1)
-                
-                register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                x = torch.cat([register_tokens, x], dim=1)
-                
-            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
+                # learned expansion: (B, L*D) -> (B, L, D)
+                ctx = self.y_to_ctx(y_emb).view(B, self.in_context_len, self.hidden_size)
+                # add per-position embedding
+                ctx = ctx + self.in_context_posemb
+                # expand registers: (1, K, D) -> (B, K, D)
+                regs = self.register_tokens.expand(B, -1, -1)
+                # ORDER (recommended): [CTX][REG][PATCH]
+                x = torch.cat([ctx, regs, x], dim=1)
+            rope = self.feat_rope if (i < self.in_context_start or self.in_context_len == 0) else self.feat_rope_incontext
+            x = block(x, c, rope)
 
-        x = x[:, self.in_context_len:]
+        # DROP BOTH ctx + regs (not just ctx)
+        if self.in_context_len > 0:
+            x = x[:, prefix_len:, :]     # <-- FIXED (was x[:, self.in_context_len:])
+        # else: x already patches-only
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
-
         return output
+
 
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
+               bottleneck_dim=128, in_context_len=24, in_context_start=4, patch_size=16, **kwargs)
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
