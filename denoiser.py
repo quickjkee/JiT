@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from model_jit import JiT_models
-from model_dino import DinoJiT_models
 from torchvision.transforms import Normalize
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
@@ -52,17 +51,7 @@ class Denoiser(nn.Module):
     ):
         super().__init__()
 
-        if 'Dino' in args.model:
-            self.net = DinoJiT_models[args.model](
-                num_classes=args.class_num,
-                input_size=args.img_size,
-                attn_drop=args.attn_dropout,
-                proj_drop=args.proj_dropout,
-                dino_trained_path=args.dino_trained_path,
-                dino_init_path=args.dino_init_path
-            )
-        else:
-            self.net = JiT_models[args.model](
+        self.net = JiT_models[args.model](
                 input_size=args.img_size,
                 in_channels=3,
                 num_classes=args.class_num,
