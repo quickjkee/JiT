@@ -383,7 +383,7 @@ class JiT(nn.Module):
             # insert prefix exactly once
             if self.in_context_len > 0 and i == self.in_context_start:
                 # learned expansion: (B, L*D) -> (B, L, D)
-                ctx = self.y_to_ctx(y_emb).view(B, self.in_context_len, self.hidden_size)
+                ctx = self.y_to_ctx(c).view(B, self.in_context_len, self.hidden_size)
                 # add per-position embedding
                 ctx = ctx + self.in_context_posemb
                 # expand registers: (1, K, D) -> (B, K, D)
