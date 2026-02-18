@@ -227,7 +227,7 @@ class JiT(nn.Module):
         bottleneck_dim=128,
         in_context_len=32,
         in_context_start=8,
-        reg_len=8,  # <-- add explicit reg_len
+        reg_len=8, 
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -254,18 +254,15 @@ class JiT(nn.Module):
         num_patches = self.x_embedder.num_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
-        # --- in-context + registers
+        # in-context + registers
         if self.in_context_len > 0:
             # Trainable registers (K tokens)
             self.register_tokens = nn.Parameter(torch.zeros(1, self.reg_len, hidden_size), requires_grad=True)
             nn.init.normal_(self.register_tokens, std=0.02)
 
-            # (1, L, D) so it matches (B, L, D)
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             nn.init.normal_(self.in_context_posemb, std=0.02)
 
-            # Replace y_emb.repeat(...) with a learned expansion y -> (L tokens)
-            # Outputs (B, L*D) then reshaped to (B, L, D)
             self.y_to_ctx = nn.Sequential(
                 nn.Linear(hidden_size, 2 * hidden_size),
                 nn.SiLU(),
@@ -376,27 +373,19 @@ class JiT(nn.Module):
         x = self.x_embedder(x)          # (B, N, D)
         x = x + self.pos_embed          # (B, N, D)
 
-        # prefix length (ctx + regs) once inserted
         prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
 
         for i, block in enumerate(self.blocks):
-            # insert prefix exactly once
             if self.in_context_len > 0 and i == self.in_context_start:
-                # learned expansion: (B, L*D) -> (B, L, D)
                 ctx = self.y_to_ctx(c).view(B, self.in_context_len, self.hidden_size)
-                # add per-position embedding
                 ctx = ctx + self.in_context_posemb
-                # expand registers: (1, K, D) -> (B, K, D)
                 regs = self.register_tokens.expand(B, -1, -1)
-                # ORDER (recommended): [CTX][REG][PATCH]
                 x = torch.cat([ctx, regs, x], dim=1)
             rope = self.feat_rope if (i < self.in_context_start or self.in_context_len == 0) else self.feat_rope_incontext
             x = block(x, c, rope)
 
-        # DROP BOTH ctx + regs (not just ctx)
         if self.in_context_len > 0:
-            x = x[:, prefix_len:, :]     # <-- FIXED (was x[:, self.in_context_len:])
-        # else: x already patches-only
+            x = x[:, prefix_len:, :]    
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
