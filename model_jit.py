@@ -202,12 +202,6 @@ class JiTBlock(nn.Module):
         return x
 
 
-# --- PRECISE PATCH: fixes prefix handling + RoPE cls count + posemb shape
-# --- and replaces y_emb.repeat(...) with y_to_ctx(y_emb)
-
-import torch
-import torch.nn as nn
-
 class JiT(nn.Module):
     """
     Just image Transformer.
@@ -256,7 +250,6 @@ class JiT(nn.Module):
 
         # in-context + registers
         if self.in_context_len > 0:
-            # Trainable registers (K tokens)
             self.register_tokens = nn.Parameter(torch.zeros(1, self.reg_len, hidden_size), requires_grad=True)
             nn.init.normal_(self.register_tokens, std=0.02)
 
@@ -269,7 +262,6 @@ class JiT(nn.Module):
                 nn.Linear(2 * hidden_size, self.in_context_len * hidden_size),
             )
         else:
-            # keep attributes for clarity
             self.register_tokens = None
             self.in_context_posemb = None
             self.y_to_ctx = None
@@ -288,7 +280,7 @@ class JiT(nn.Module):
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=prefix_len,   # <-- FIXED
+            num_cls_token=prefix_len,  
         )
 
         # transformer
@@ -373,17 +365,16 @@ class JiT(nn.Module):
         x = self.x_embedder(x)          # (B, N, D)
         x = x + self.pos_embed          # (B, N, D)
 
-        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
-
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
-                ctx = self.y_to_ctx(c).view(B, self.in_context_len, self.hidden_size)
+                ctx = self.y_to_ctx(y_emb).view(B, self.in_context_len, self.hidden_size)
                 ctx = ctx + self.in_context_posemb
                 regs = self.register_tokens.expand(B, -1, -1)
                 x = torch.cat([ctx, regs, x], dim=1)
             rope = self.feat_rope if (i < self.in_context_start or self.in_context_len == 0) else self.feat_rope_incontext
             x = block(x, c, rope)
 
+        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
         if self.in_context_len > 0:
             x = x[:, prefix_len:, :]    
 
@@ -395,7 +386,7 @@ class JiT(nn.Module):
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, in_context_len=24, in_context_start=4, patch_size=16, **kwargs)
+               bottleneck_dim=128, in_context_len=24, reg_len=8, in_context_start=4, patch_size=16, **kwargs)
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
