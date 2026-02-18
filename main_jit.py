@@ -272,7 +272,7 @@ def main(args):
                 epoch_name="last"
             )
 
-        if epoch % 100 == 0 and epoch > 0:
+        if epoch % 50 == 0 and epoch > 0:
             misc.save_model(
                 args=args,
                 model_without_ddp=model_without_ddp,
