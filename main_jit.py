@@ -145,7 +145,6 @@ def main(args):
 
     cudnn.benchmark = True
     torch.set_float32_matmul_precision('high')
-    torch.set_num_threads(64)
 
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
