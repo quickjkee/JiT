@@ -145,7 +145,7 @@ def main(args):
     np.random.seed(seed)
 
     cudnn.benchmark = True
-    torch.set_num_threads(16)
+    # torch.set_num_threads(16)
     torch.set_float32_matmul_precision('high')
 
     num_tasks = misc.get_world_size()
