@@ -19,7 +19,10 @@ from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
 from overfit_experiment import run_overfit
 from denoiser import Denoiser
 
-torch.set_num_threads(64)
+
+torch.set_num_threads(16)
+torch.set_float32_matmul_precision('high')
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser('JiT', add_help=False)
