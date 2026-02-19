@@ -276,14 +276,6 @@ def main(args):
                 epoch_name="last"
             )
 
-        if epoch % 50 == 0 and epoch > 0:
-            misc.save_model(
-                args=args,
-                model_without_ddp=model_without_ddp,
-                optimizer=optimizer,
-                epoch=epoch
-            )
-
         # Perform online evaluation at specified intervals
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
