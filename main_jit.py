@@ -19,6 +19,7 @@ from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
 from overfit_experiment import run_overfit
 from denoiser import Denoiser
 
+torch.set_num_threads(64)
 
 def get_args_parser():
     parser = argparse.ArgumentParser('JiT', add_help=False)
@@ -31,6 +32,9 @@ def get_args_parser():
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
     parser.add_argument('--dino_trained_path', type=str)
     parser.add_argument('--dino_init_path', type=str)
+    parser.add_argument('--in_context_len', default=32, type=int)
+    parser.add_argument('--reg_len', default=0, type=int)
+    parser.add_argument('--in_context_start', default=4, type=int)
 
     # training
     parser.add_argument('--epochs', default=200, type=int)

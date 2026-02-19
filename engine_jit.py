@@ -21,9 +21,12 @@ from torchvision.transforms import Normalize
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
 
 
 
+num_workers = 8 
+executor = ThreadPoolExecutor(max_workers=num_workers)
 def unpack_batch(batch, device, args):
     if os.path.exists(args.data_path):
         x, y = batch
@@ -34,7 +37,9 @@ def unpack_batch(batch, device, args):
                             transforms.RandomHorizontalFlip(),
                             transforms.PILToTensor()
                         ])
-        x = torch.stack([transform_train(img) for img in batch['image']])
+        images = batch['image']
+        x_list = list(executor.map(transform_train, images))
+        x = torch.stack(x_list)
         y = torch.tensor(batch['label'])
     x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
     x = x * 2.0 - 1.0
