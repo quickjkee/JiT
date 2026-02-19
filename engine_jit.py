@@ -25,18 +25,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 
-num_workers = 8 
-executor = ThreadPoolExecutor(max_workers=num_workers)
-def unpack_batch(batch, device, args):
+def unpack_batch(batch, device, args, executor=None, transform_train=None):
     if os.path.exists(args.data_path):
         x, y = batch
     else:
-        transform_train = transforms.Compose([
-                            transforms.Lambda(np_chw_to_pil),
-                            transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
-                            transforms.RandomHorizontalFlip(),
-                            transforms.PILToTensor()
-                        ])
+        assert executor is not None
+        assert transform_train is not None
         images = batch['image']
         x_list = list(executor.map(transform_train, images))
         x = torch.stack(x_list)
@@ -47,12 +41,20 @@ def unpack_batch(batch, device, args):
     return x, y
 
 
-def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
+def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None, num_workers = 1):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 20
+    
+    transform_train = transforms.Compose([
+        transforms.Lambda(np_chw_to_pil),
+        transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
+        transforms.RandomHorizontalFlip(),
+        transforms.PILToTensor()
+    ])
+    executor = ThreadPoolExecutor(max_workers=num_workers)
 
     optimizer.zero_grad()
 
@@ -64,7 +66,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         # per iteration (instead of per epoch) lr scheduler
         lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
-        x, labels = unpack_batch(batch, device, args=args)
+        x, labels = unpack_batch(batch, device, args=args, executor=executor, transform_train=transform_train)
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):

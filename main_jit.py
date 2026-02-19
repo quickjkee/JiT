@@ -20,9 +20,6 @@ from overfit_experiment import run_overfit
 from denoiser import Denoiser
 
 
-torch.set_num_threads(16)
-torch.set_float32_matmul_precision('high')
-
 
 def get_args_parser():
     parser = argparse.ArgumentParser('JiT', add_help=False)
@@ -148,6 +145,8 @@ def main(args):
     np.random.seed(seed)
 
     cudnn.benchmark = True
+    torch.set_num_threads(16)
+    torch.set_float32_matmul_precision('high')
 
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
