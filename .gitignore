@@ -20,5 +20,5 @@ local_output*
 *.txt
 *.ipynb
 
-swd_upscale_analysis*
 *results*
+*tut*
