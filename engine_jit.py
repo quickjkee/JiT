@@ -21,7 +21,7 @@ from torchvision.transforms import Normalize
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-# from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 
 
 
@@ -56,8 +56,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         transforms.RandomHorizontalFlip(),
         transforms.PILToTensor()
     ])
-    # executor = ThreadPoolExecutor(max_workers=num_workers)
-    executor = None
+    executor = ThreadPoolExecutor(max_workers=num_workers)
 
     optimizer.zero_grad()
 
