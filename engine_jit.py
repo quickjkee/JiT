@@ -16,36 +16,21 @@ import util.lr_sched as lr_sched
 import copy
 
 from util.fid import calculate_fid
-from util.crop import center_crop_arr, np_chw_to_pil
-from torchvision.transforms import Normalize
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
 
 
-
-num_workers = 8 
-executor = ThreadPoolExecutor(max_workers=num_workers)
 def unpack_batch(batch, device, args):
     if os.path.exists(args.data_path):
         x, y = batch
     else:
-        transform_train = transforms.Compose([
-                            transforms.Lambda(np_chw_to_pil),
-                            transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
-                            transforms.RandomHorizontalFlip(),
-                            transforms.PILToTensor()
-                        ])
-        images = batch['image']
-        x_list = list(executor.map(transform_train, images))
-        x = torch.stack(x_list)
+        x = batch['image']
         y = torch.tensor(batch['label'])
     x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
     x = x * 2.0 - 1.0
     y = y.to(device, non_blocking=True)
     return x, y
-
 
 def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
