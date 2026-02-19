@@ -29,11 +29,13 @@ def unpack_batch(batch, device, args, executor=None, transform_train=None):
     if os.path.exists(args.data_path):
         x, y = batch
     else:
-        assert executor is not None
         assert transform_train is not None
         images = batch['image']
-        x_list = list(executor.map(transform_train, images))
-        x = torch.stack(x_list)
+        if executor is not None:
+            x_list = list(executor.map(transform_train, images))
+            x = torch.stack(x_list)
+        else:
+            x = torch.stack([transform_train(img) for img in images])
         y = torch.tensor(batch['label'])
     x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
     x = x * 2.0 - 1.0
@@ -41,7 +43,7 @@ def unpack_batch(batch, device, args, executor=None, transform_train=None):
     return x, y
 
 
-def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None, num_workers = 1):
+def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None, num_workers = 8):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -54,7 +56,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         transforms.RandomHorizontalFlip(),
         transforms.PILToTensor()
     ])
-    executor = ThreadPoolExecutor(max_workers=num_workers)
+    executor = None #ThreadPoolExecutor(max_workers=num_workers)
 
     optimizer.zero_grad()
 
