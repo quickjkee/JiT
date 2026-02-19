@@ -56,7 +56,8 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         transforms.RandomHorizontalFlip(),
         transforms.PILToTensor()
     ])
-    executor = None #ThreadPoolExecutor(max_workers=num_workers)
+    executor = ThreadPoolExecutor(max_workers=num_workers)
+    executor = None
 
     optimizer.zero_grad()
 
