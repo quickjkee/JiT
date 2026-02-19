@@ -6,7 +6,8 @@ params:
     params:
       table: //home/yr/ILSVRC/train
       yt_proxy: hahn
-      buf_size: 64
+      buf_size: 1024
+      preproc_workers: 4
   preprocess:
     - in_map:
         image_bytes: image
