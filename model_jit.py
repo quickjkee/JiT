@@ -168,13 +168,13 @@ class DualAttention(nn.Module):
         # Registers qkv
         qkv_context = self.qkv_context(c).reshape(B, in_context_len, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q_context, k_context, v_context = qkv_context[0], qkv_context[1], qkv_context[2] 
-        q_context = self.q_norm(q_context)
-        k_context = self.k_norm(k_context)
+        q_context = self.q_norm_context(q_context)
+        k_context = self.k_norm_context(k_context)
 
         # Concat
-        q = torch.cat([q_context, q], dim=1)
-        k = torch.cat([k_context, k], dim=1)
-        v = torch.cat([v_context, v], dim=1)
+        q = torch.cat([q_context, q], dim=2)
+        k = torch.cat([k_context, k], dim=2)
+        v = torch.cat([v_context, v], dim=2)
 
         # Attn part
         q = rope(q)
@@ -273,18 +273,17 @@ class DualJiTBlock(nn.Module):
         )
 
     @torch.compile
-    def forward(self, x,  c, feat_rope=None):
+    def forward(self, x,  c, feat_rope=None, in_context_len=0):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp, \
         shift_msa_context, scale_msa_context, gate_msa_context, shift_mlp_context, scale_mlp_context, gate_mlp_context \
              = self.adaLN_modulation(c).chunk(12, dim=-1)
 
-        in_context_len = c.size[1]
         x_patch = x[:, in_context_len:, :]  
         x_registers = x[:, :in_context_len, :]  
 
         # Part 1. Attention branch
         x_patch_1 = modulate(self.norm1(x_patch), shift_msa, scale_msa)
-        x_registers_1 = modulate(self.norm1(x_registers), shift_msa_context, scale_msa_context)
+        x_registers_1 = modulate(self.norm1_context(x_registers), shift_msa_context, scale_msa_context)
         x_patch_1, x_registers_1 = self.attn(x_registers_1, x_patch_1, rope=feat_rope)
         x_patch = x_patch + gate_msa.unsqueeze(1) * x_patch_1
         x_registers = x_registers + gate_msa_context.unsqueeze(1) * x_registers_1
@@ -357,13 +356,6 @@ class JiT(nn.Module):
         # rope
         half_head_dim = hidden_size // num_heads // 2
         hw_seq_len = input_size // patch_size
-        self.feat_rope = VisionRotaryEmbeddingFast(
-            dim=half_head_dim,
-            pt_seq_len=hw_seq_len,
-            num_cls_token=0,
-        )
-
-        # IMPORTANT: cls/prefix tokens AFTER insertion are ctx + regs
         prefix_len = (self.in_context_len if self.in_context_len > 0 else 0) + (self.reg_len if self.in_context_len > 0 else 0)
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
@@ -456,8 +448,7 @@ class JiT(nn.Module):
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
-            rope = self.feat_rope if (i < self.in_context_start or self.in_context_len == 0) else self.feat_rope_incontext
-            x = block(x, c, rope)
+            x = block(x, c, self.feat_rope_incontext, self.in_context_len)
 
         prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
         if self.in_context_len > 0:
