@@ -137,6 +137,56 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
         return x
 
+class DualAttention(nn.Module):
+    def __init__(self, dim, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+
+        self.q_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
+        self.q_norm_context = RMSNorm(head_dim) if qk_norm else nn.Identity()
+        self.k_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
+        self.k_norm_context = RMSNorm(head_dim) if qk_norm else nn.Identity()
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.qkv_context = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_context = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, c, x, rope):
+        B, N, C = x.shape
+        _, in_context_len, _ = c.shape
+
+        # Patch qkv
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2] 
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        # Registers qkv
+        qkv_context = self.qkv_context(c).reshape(B, in_context_len, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q_context, k_context, v_context = qkv_context[0], qkv_context[1], qkv_context[2] 
+        q_context = self.q_norm(q_context)
+        k_context = self.k_norm(k_context)
+
+        # Concat
+        q = torch.cat([q_context, q], dim=1)
+        k = torch.cat([k_context, k], dim=1)
+        v = torch.cat([v_context, v], dim=1)
+
+        # Attn part
+        q = rope(q)
+        k = rope(k)
+        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+        x = x.transpose(1, 2).reshape(B, N + in_context_len, C)
+
+        # Final split
+        x_patch = self.proj_drop(self.proj(x[:, in_context_len:, :]))
+        x_registers = self.proj_drop(self.proj_context(x[:, :in_context_len, :]))
+        return x_patch, x_registers
+
 
 class SwiGLUFFN(nn.Module):
     def __init__(
@@ -201,6 +251,53 @@ class JiTBlock(nn.Module):
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
+class DualJiTBlock(nn.Module):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0):
+        super().__init__()
+        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm1_context = RMSNorm(hidden_size, eps=1e-6)
+
+        self.attn = DualAttention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
+                              attn_drop=attn_drop, proj_drop=proj_drop)
+
+        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm2_context = RMSNorm(hidden_size, eps=1e-6)
+
+        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        self.mlp_context = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 12 * hidden_size, bias=True)
+        )
+
+    @torch.compile
+    def forward(self, x,  c, feat_rope=None):
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp, \
+        shift_msa_context, scale_msa_context, gate_msa_context, shift_mlp_context, scale_mlp_context, gate_mlp_context \
+             = self.adaLN_modulation(c).chunk(12, dim=-1)
+
+        in_context_len = c.size[1]
+        x_patch = x[:, in_context_len:, :]  
+        x_registers = x[:, :in_context_len, :]  
+
+        # Part 1. Attention branch
+        x_patch_1 = modulate(self.norm1(x_patch), shift_msa, scale_msa)
+        x_registers_1 = modulate(self.norm1(x_registers), shift_msa_context, scale_msa_context)
+        x_patch_1, x_registers_1 = self.attn(x_registers_1, x_patch_1, rope=feat_rope)
+        x_patch = x_patch + gate_msa.unsqueeze(1) * x_patch_1
+        x_registers = x_registers + gate_msa_context.unsqueeze(1) * x_registers_1
+
+        # Part 2. MLP branch
+        x_patch = x_patch + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x_patch), shift_mlp, scale_mlp))
+        x_registers = x_registers + gate_mlp_context.unsqueeze(1) * self.mlp_context(modulate(self.norm2_context(x_registers), 
+                                                                                              shift_mlp_context, scale_mlp_context)
+                                                                                    )
+        # Part 3. Concat
+        x = torch.cat([x_registers, x_patch], dim=1)
+        return x
+
 
 class JiT(nn.Module):
     """
@@ -250,17 +347,8 @@ class JiT(nn.Module):
 
         # in-context + registers
         if self.in_context_len > 0:
-            self.register_tokens = nn.Parameter(torch.zeros(1, self.reg_len, hidden_size), requires_grad=True)
-            nn.init.normal_(self.register_tokens, std=0.02)
-
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             nn.init.normal_(self.in_context_posemb, std=0.02)
-
-            self.y_to_ctx = nn.Sequential(
-                nn.Linear(hidden_size, 2 * hidden_size),
-                nn.SiLU(),
-                nn.Linear(2 * hidden_size, self.in_context_len * hidden_size),
-            )
         else:
             self.register_tokens = None
             self.in_context_posemb = None
@@ -285,9 +373,9 @@ class JiT(nn.Module):
 
         # transformer
         self.blocks = nn.ModuleList([
-            JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
-                     attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
+            DualJiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
+                        attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                        proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
             for i in range(depth)
         ])
 
@@ -354,8 +442,6 @@ class JiT(nn.Module):
         t: (B,)
         y: (B,)
         """
-        B = x.shape[0]
-
         # class and time embeddings
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
@@ -367,10 +453,9 @@ class JiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
-                ctx = self.y_to_ctx(y_emb).view(B, self.in_context_len, self.hidden_size)
-                ctx = ctx + self.in_context_posemb
-                regs = self.register_tokens.expand(B, -1, -1)
-                x = torch.cat([ctx, regs, x], dim=1)
+                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                in_context_tokens += self.in_context_posemb
+                x = torch.cat([in_context_tokens, x], dim=1)
             rope = self.feat_rope if (i < self.in_context_start or self.in_context_len == 0) else self.feat_rope_incontext
             x = block(x, c, rope)
 
