@@ -34,6 +34,7 @@ def get_args_parser():
     parser.add_argument('--in_context_len', default=32, type=int)
     parser.add_argument('--reg_len', default=0, type=int)
     parser.add_argument('--in_context_start', default=4, type=int)
+    parser.add_argument('--in_context_end', default=100, type=int)
 
     # training
     parser.add_argument('--epochs', default=200, type=int)

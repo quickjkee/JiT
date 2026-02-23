@@ -59,7 +59,8 @@ class Denoiser(nn.Module):
                 proj_drop=args.proj_dropout,
                 in_context_len=args.in_context_len,
                 reg_len=args.reg_len,
-                in_context_start=args.in_context_start
+                in_context_start=args.in_context_start,
+                in_context_end=args.in_context_end,
             )
         print_trainable(self.net)
 

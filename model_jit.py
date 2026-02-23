@@ -221,6 +221,7 @@ class JiT(nn.Module):
         bottleneck_dim=128,
         in_context_len=32,
         in_context_start=8,
+        in_context_end=8,
         reg_len=8, 
     ):
         super().__init__()
@@ -232,6 +233,7 @@ class JiT(nn.Module):
         self.input_size = input_size
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
+        self.in_context_end = in_context_end
         self.num_classes = num_classes
         self.reg_len = reg_len
 
@@ -356,6 +358,8 @@ class JiT(nn.Module):
         y: (B,)
         """
         B = x.shape[0]
+        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
+        in_context_len = self.in_context_len
 
         # class and time embeddings
         t_emb = self.t_embedder(t)
@@ -365,6 +369,7 @@ class JiT(nn.Module):
         # patchify
         x = self.x_embedder(x)          # (B, N, D)
         x = x + self.pos_embed          # (B, N, D)
+        rope = self.feat_rope
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
@@ -372,11 +377,14 @@ class JiT(nn.Module):
                 ctx = ctx + self.in_context_posemb
                 regs = self.register_tokens.expand(B, -1, -1)
                 x = torch.cat([ctx, regs, x], dim=1)
-            rope = self.feat_rope if (i < self.in_context_start or self.in_context_len == 0) else self.feat_rope_incontext
+                rope = self.feat_rope_incontext
+            elif self.in_context_len > 0 and i >= self.in_context_end:
+                x = x[:, prefix_len:, :]   
+                rope = self.feat_rope
+                in_context_len = 0
             x = block(x, c, rope)
 
-        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
-        if self.in_context_len > 0:
+        if in_context_len > 0:
             x = x[:, prefix_len:, :]    
 
         x = self.final_layer(x, c)
