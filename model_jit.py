@@ -373,10 +373,8 @@ class JiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
-                if self.y_to_ctx == nn.Identity():
-                    ctx = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                else:
-                    ctx = self.y_to_ctx(y_emb).view(B, self.in_context_len, self.hidden_size)
+                #ctx = self.y_to_ctx(y_emb).view(B, self.in_context_len, self.hidden_size)
+                ctx = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 ctx = ctx + self.in_context_posemb
                 regs = self.register_tokens.expand(B, -1, -1)
                 x = torch.cat([ctx, regs, x], dim=1)
