@@ -256,11 +256,12 @@ class JiT(nn.Module):
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             nn.init.normal_(self.in_context_posemb, std=0.02)
 
-            self.y_to_ctx = nn.Sequential(
-                nn.Linear(hidden_size, 2 * hidden_size),
-                nn.SiLU(),
-                nn.Linear(2 * hidden_size, self.in_context_len * hidden_size),
-            )
+            self.y_to_ctx = nn.Identity()
+            #nn.Sequential(
+            #    nn.Linear(hidden_size, 2 * hidden_size),
+            #    nn.SiLU(),
+            #    nn.Linear(2 * hidden_size, self.in_context_len * hidden_size),
+            #)
         else:
             self.register_tokens = None
             self.in_context_posemb = None
