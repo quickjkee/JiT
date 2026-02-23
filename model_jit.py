@@ -220,9 +220,7 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8,
-        in_context_end=8,
-        reg_len=8, 
+        in_context_start=8
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -233,41 +231,25 @@ class JiT(nn.Module):
         self.input_size = input_size
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
-        self.in_context_end = in_context_end
         self.num_classes = num_classes
-        self.reg_len = reg_len
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, hidden_size)
 
         # linear embed
-        self.x_embedder = BottleneckPatchEmbed(
-            input_size, patch_size, in_channels, bottleneck_dim, hidden_size, bias=True
-        )
+        self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, in_channels, bottleneck_dim, hidden_size, bias=True)
 
-        # fixed sin-cos embedding
+        # use fixed sin-cos embedding
         num_patches = self.x_embedder.num_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
-        # in-context + registers
+        # in-context cls token
         if self.in_context_len > 0:
-            self.register_tokens = nn.Parameter(torch.zeros(1, self.reg_len, hidden_size), requires_grad=True)
-            nn.init.normal_(self.register_tokens, std=0.02)
-
-            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            nn.init.normal_(self.in_context_posemb, std=0.02)
-
-            self.y_to_ctx = nn.Identity()
-            #nn.Sequential(
-            #    nn.Linear(hidden_size, 2 * hidden_size),
-            #    nn.SiLU(),
-            #    nn.Linear(2 * hidden_size, self.in_context_len * hidden_size),
-            #)
-        else:
-            self.register_tokens = None
-            self.in_context_posemb = None
-            self.y_to_ctx = None
+            self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            torch.nn.init.normal_(self.register_tokens, std=.02)
+            #self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            #torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
@@ -275,15 +257,12 @@ class JiT(nn.Module):
         self.feat_rope = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=0,
+            num_cls_token=0
         )
-
-        # IMPORTANT: cls/prefix tokens AFTER insertion are ctx + regs
-        prefix_len = (self.in_context_len if self.in_context_len > 0 else 0) + (self.reg_len if self.in_context_len > 0 else 0)
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=prefix_len,  
+            num_cls_token=self.in_context_len
         )
 
         # transformer
@@ -353,70 +332,63 @@ class JiT(nn.Module):
 
     def forward(self, x, t, y):
         """
-        x: (B, C, H, W)
-        t: (B,)
-        y: (B,)
+        x: (N, C, H, W)
+        t: (N,)
+        y: (N,)
         """
-        B = x.shape[0]
-        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
-        in_context_len = self.in_context_len
-
         # class and time embeddings
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
 
-        # patchify
-        x = self.x_embedder(x)          # (B, N, D)
-        x = x + self.pos_embed          # (B, N, D)
-        rope = self.feat_rope
+        # forward JiT
+        x = self.x_embedder(x)
+        x += self.pos_embed
 
         for i, block in enumerate(self.blocks):
+            # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                #ctx = self.y_to_ctx(y_emb).view(B, self.in_context_len, self.hidden_size)
-                ctx = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                ctx = ctx + self.in_context_posemb
-                regs = self.register_tokens.expand(B, -1, -1)
-                x = torch.cat([ctx, regs, x], dim=1)
-                rope = self.feat_rope_incontext
-            elif self.in_context_len > 0 and i == self.in_context_end:
-                x = x[:, prefix_len:, :]   
-                rope = self.feat_rope
-                in_context_len = 0
-            x = block(x, c, rope)
+                #in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                #in_context_tokens += self.in_context_posemb
+                #x = torch.cat([in_context_tokens, x], dim=1)
+                
+                register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
+                x = torch.cat([register_tokens, x], dim=1)
+                
+            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        if in_context_len > 0:
-            x = x[:, prefix_len:, :]    
+        x = x[:, self.in_context_len:]
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
-        return output
 
+        return output
 
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=24, reg_len=8, in_context_start=4,
+               bottleneck_dim=128, in_context_len=32, in_context_start=4, patch_size=16, **kwargs)
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=4,
+               bottleneck_dim=128, in_context_len=32, in_context_start=4, patch_size=32, **kwargs)
 
 def JiT_L_16(**kwargs):
     return JiT(depth=24, hidden_size=1024, num_heads=16,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=8,
- 
+               bottleneck_dim=128, in_context_len=32, in_context_start=8, patch_size=16, **kwargs)
+
 def JiT_L_32(**kwargs):
     return JiT(depth=24, hidden_size=1024, num_heads=16,
-               bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=8,
+               bottleneck_dim=128, in_context_len=32, in_context_start=8, patch_size=32, **kwargs)
 
 def JiT_H_16(**kwargs):
     return JiT(depth=32, hidden_size=1280, num_heads=16,
-               bottleneck_dim=256, patch_size=16, **kwargs) # in_context_len=32, in_context_start=10,
+               bottleneck_dim=256, in_context_len=32, in_context_start=10, patch_size=16, **kwargs)
 
 def JiT_H_32(**kwargs):
     return JiT(depth=32, hidden_size=1280, num_heads=16,
-               bottleneck_dim=256, patch_size=32, **kwargs) # in_context_len=32, in_context_start=10,
+               bottleneck_dim=256, in_context_len=32, in_context_start=10, patch_size=32, **kwargs)
+
 
 JiT_models = {
     'JiT-B/16': JiT_B_16,
