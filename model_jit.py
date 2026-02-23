@@ -379,7 +379,7 @@ class JiT(nn.Module):
                 regs = self.register_tokens.expand(B, -1, -1)
                 x = torch.cat([ctx, regs, x], dim=1)
                 rope = self.feat_rope_incontext
-            elif self.in_context_len > 0 and i >= self.in_context_end:
+            elif self.in_context_len > 0 and i == self.in_context_end:
                 x = x[:, prefix_len:, :]   
                 rope = self.feat_rope
                 in_context_len = 0
