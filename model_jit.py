@@ -221,8 +221,6 @@ class JiT(nn.Module):
         bottleneck_dim=128,
         in_context_len=32,
         in_context_start=8,
-        in_context_end=8,
-        reg_len=8, 
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -233,9 +231,7 @@ class JiT(nn.Module):
         self.input_size = input_size
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
-        self.in_context_end = in_context_end
         self.num_classes = num_classes
-        self.reg_len = reg_len
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -250,14 +246,10 @@ class JiT(nn.Module):
         num_patches = self.x_embedder.num_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
-        # in-context + registers
+        # in-context
         if self.in_context_len > 0:
-            self.register_tokens = nn.Parameter(torch.zeros(1, self.reg_len, hidden_size), requires_grad=True)
-            nn.init.normal_(self.register_tokens, std=0.02)
-
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             nn.init.normal_(self.in_context_posemb, std=0.02)
-
             self.y_to_ctx = nn.Identity()
             #nn.Sequential(
             #    nn.Linear(hidden_size, 2 * hidden_size),
@@ -278,8 +270,7 @@ class JiT(nn.Module):
             num_cls_token=0,
         )
 
-        # IMPORTANT: cls/prefix tokens AFTER insertion are ctx + regs
-        prefix_len = (self.in_context_len if self.in_context_len > 0 else 0) + (self.reg_len if self.in_context_len > 0 else 0)
+        prefix_len = self.in_context_len
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
@@ -357,8 +348,7 @@ class JiT(nn.Module):
         t: (B,)
         y: (B,)
         """
-        B = x.shape[0]
-        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
+        prefix_len = self.in_context_len
         in_context_len = self.in_context_len
 
         # class and time embeddings
@@ -376,13 +366,8 @@ class JiT(nn.Module):
                 #ctx = self.y_to_ctx(y_emb).view(B, self.in_context_len, self.hidden_size)
                 ctx = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 ctx = ctx + self.in_context_posemb
-                regs = self.register_tokens.expand(B, -1, -1)
-                x = torch.cat([ctx, regs, x], dim=1)
+                x = torch.cat([ctx, x], dim=1)
                 rope = self.feat_rope_incontext
-            elif self.in_context_len > 0 and i == self.in_context_end:
-                x = x[:, prefix_len:, :]   
-                rope = self.feat_rope
-                in_context_len = 0
             x = block(x, c, rope)
 
         if in_context_len > 0:
@@ -396,7 +381,7 @@ class JiT(nn.Module):
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=24, reg_len=8, in_context_start=4,
+               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=24, in_context_start=4
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
