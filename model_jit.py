@@ -316,8 +316,7 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8,
-        reg_len=8, 
+        in_context_start=8
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -329,7 +328,6 @@ class JiT(nn.Module):
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
         self.num_classes = num_classes
-        self.reg_len = reg_len
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -356,19 +354,32 @@ class JiT(nn.Module):
         # rope
         half_head_dim = hidden_size // num_heads // 2
         hw_seq_len = input_size // patch_size
-        prefix_len = (self.in_context_len if self.in_context_len > 0 else 0) + (self.reg_len if self.in_context_len > 0 else 0)
+        prefix_len = self.in_context_len
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
             num_cls_token=prefix_len,  
         )
+        self.feat_rope = VisionRotaryEmbeddingFast(
+            dim=half_head_dim,
+            pt_seq_len=hw_seq_len,
+            num_cls_token=0
+        )
 
-        # transformer
-        self.blocks = nn.ModuleList([
+        # transformer dual
+        self.dual_blocks = nn.ModuleList([
             DualJiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
                         attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
                         proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
-            for i in range(depth)
+            for i in range(self.in_context_start, depth)
+        ])
+
+        # transformer single
+        self.single_blocks = nn.ModuleList([
+            JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
+                     attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
+            for i in range(self.in_context_start)
         ])
 
         # linear predict
@@ -443,16 +454,20 @@ class JiT(nn.Module):
         x = self.x_embedder(x)          # (B, N, D)
         x = x + self.pos_embed          # (B, N, D)
 
-        for i, block in enumerate(self.blocks):
-            if self.in_context_len > 0 and i == self.in_context_start:
+        # Single blocks
+        for i, block in enumerate(self.single_blocks):
+            x = block(x, c, self.feat_rope)
+
+        # Dual blocks
+        for i, block in enumerate(self.dual_blocks):
+            if i == 0:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
             x = block(x, c, self.feat_rope_incontext, self.in_context_len)
 
-        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
         if self.in_context_len > 0:
-            x = x[:, prefix_len:, :]    
+            x = x[:, self.in_context_len:, :]    
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
@@ -462,7 +477,7 @@ class JiT(nn.Module):
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=24, reg_len=8, in_context_start=4,
+               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=24, in_context_start=4,
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
