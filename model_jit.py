@@ -363,7 +363,7 @@ class JiT(nn.Module):
         self.feat_rope = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=0
+            num_cls_token=prefix_len
         )
 
         # transformer dual
