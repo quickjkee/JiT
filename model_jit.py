@@ -255,7 +255,6 @@ class JiT(nn.Module):
                 nn.SiLU(),
                 nn.Linear(256, self.in_context_len * hidden_size),
             )
-            self.alpha = nn.Parameter(torch.tensor(0.0), requires_grad=True)
         else:
             self.register_tokens = None
             self.in_context_posemb = None
@@ -365,7 +364,7 @@ class JiT(nn.Module):
             if self.in_context_len > 0 and i == self.in_context_start:
                 ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, self.hidden_size)
 
-                ctx = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1) + self.alpha * ctx
+                ctx = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1) + ctx
 
                 ctx = ctx + self.in_context_posemb
                 x = torch.cat([ctx, x], dim=1)
