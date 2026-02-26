@@ -256,7 +256,7 @@ class JiT(nn.Module):
                 nn.Linear(256, self.in_context_len * hidden_size),
             )  
 
-            self.layer_wise_ctx_MLPs = nn.Modulelist([
+            self.layer_wise_ctx_MLPs = nn.ModuleList([
                 nn.Sequential(
                         RMSNorm(hidden_size, eps=1e-6),
                         SwiGLUFFN(hidden_size, int(hidden_size * 4), drop=proj_drop))
@@ -366,19 +366,22 @@ class JiT(nn.Module):
         x = self.x_embedder(x)          # (B, N, D)
         x = x + self.pos_embed          # (B, N, D)
         rope = self.feat_rope
+        start_idx = 0
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
                 ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, self.hidden_size)
                 ctx = ctx + self.in_context_posemb
-                ctx = self.layer_wise_ctx_MLPs[i](ctx)
+                ctx = self.layer_wise_ctx_MLPs[start_idx](ctx)
                 x = torch.cat([ctx, x], dim=1)
                 rope = self.feat_rope_incontext
+                start_idx += 1
             if self.in_context_len > 0 and i > self.in_context_start:
                 ctx = x[:, :prefix_len, :]  
                 x = x[:, prefix_len:, :]  
-                ctx = self.layer_wise_ctx_MLPs[i](ctx)
+                ctx = self.layer_wise_ctx_MLPs[start_idx](ctx)
                 x = torch.cat([ctx, x], dim=1)
+                start_idx += 1
             x = block(x, c, rope)
 
         if in_context_len > 0:
