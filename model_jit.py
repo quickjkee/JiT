@@ -371,7 +371,7 @@ class JiT(nn.Module):
             DualJiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
                         attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
                         proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
-            for i in range(self.in_context_start, depth)
+            for i in range(self.in_context_start)
         ])
 
         # transformer single
@@ -379,7 +379,7 @@ class JiT(nn.Module):
             JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
                      attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
                      proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
-            for i in range(self.in_context_start)
+            for i in range(self.in_context_start, depth)
         ])
 
         # linear predict
@@ -459,10 +459,6 @@ class JiT(nn.Module):
         x = self.x_embedder(x)          # (B, N, D)
         x = x + self.pos_embed          # (B, N, D)
 
-        # Single blocks
-        for i, block in enumerate(self.single_blocks):
-            x = block(x, c, self.feat_rope)
-
         # Dual blocks
         for i, block in enumerate(self.dual_blocks):
             if i == 0:
@@ -470,6 +466,10 @@ class JiT(nn.Module):
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
             x = block(x, c, self.feat_rope_incontext, self.in_context_len)
+
+        # Single blocks
+        for i, block in enumerate(self.single_blocks):
+            x = block(x, c, self.feat_rope)
 
         if self.in_context_len > 0:
             x = x[:, self.in_context_len:, :]    
