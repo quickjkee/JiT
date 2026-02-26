@@ -363,9 +363,6 @@ class JiT(nn.Module):
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
                 ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, self.hidden_size)
-
-                ctx = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1) + ctx
-
                 ctx = ctx + self.in_context_posemb
                 x = torch.cat([ctx, x], dim=1)
                 rope = self.feat_rope_incontext
@@ -373,7 +370,7 @@ class JiT(nn.Module):
 
         if in_context_len > 0:
             x = x[:, prefix_len:, :]    
-
+          
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
         return output
