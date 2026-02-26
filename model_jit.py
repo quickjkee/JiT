@@ -248,7 +248,6 @@ class JiT(nn.Module):
 
         # in-context
         if self.in_context_len > 0:
-            """
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             nn.init.normal_(self.in_context_posemb, std=0.02)
             self.y_to_ctx = nn.Sequential(
@@ -256,17 +255,7 @@ class JiT(nn.Module):
                 nn.SiLU(),
                 nn.Linear(256, self.in_context_len * hidden_size),
             )
-            """
-
-            self.register_basis = nn.Parameter(torch.randn(self.in_context_len, hidden_size) * 0.02, requires_grad=True)
-            self.y_to_h = nn.Sequential(
-                nn.Linear(hidden_size, 256),
-                nn.SiLU(),
-                nn.Linear(256, 256),
-            )
-            self.h_to_mix = nn.Linear(256, self.in_context_len)
-            self.h_to_scale = nn.Linear(256, hidden_size)
-            self.h_to_shift = nn.Linear(256, hidden_size)
+            self.alpha = nn.Parameter(torch.tensor(0.0), requires_grad=True)
         else:
             self.register_tokens = None
             self.in_context_posemb = None
@@ -374,17 +363,11 @@ class JiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
-                #ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, self.hidden_size)
-                #ctx = ctx + self.in_context_posemb
-                
-                h = self.y_to_h(y_emb)
-                mix = self.h_to_mix(h)
-                mix = mix.softmax(dim=-1)
-                ctx = self.register_basis.unsqueeze(0) * mix.unsqueeze(-1)
-                scale = self.h_to_scale(h).unsqueeze(1) 
-                shift = self.h_to_shift(h).unsqueeze(1) 
-                ctx = ctx * (1 + scale) + shift  
+                ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, self.hidden_size)
 
+                ctx = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1) + self.alpha * ctx
+
+                ctx = ctx + self.in_context_posemb
                 x = torch.cat([ctx, x], dim=1)
                 rope = self.feat_rope_incontext
             x = block(x, c, rope)
