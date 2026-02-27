@@ -251,16 +251,18 @@ class JiT(nn.Module):
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             nn.init.normal_(self.in_context_posemb, std=0.02)
             self.y_to_ctx = nn.Sequential(
+                RMSNorm(hidden_size, eps=1e-6),
                 nn.Linear(hidden_size, 256),
                 nn.SiLU(),
-                nn.Linear(256, self.in_context_len * hidden_size),
-            )  
+                nn.Linear(256, self.in_context_len * 756),
+            )
+            self.ctx_out = nn.Linear(756, hidden_size) 
 
             self.layer_wise_ctx_MLPs = nn.ModuleList([
                 nn.Sequential(
                         RMSNorm(hidden_size, eps=1e-6),
                         SwiGLUFFN(hidden_size, int(hidden_size * 4), drop=proj_drop))
-                for _ in range(depth - in_context_start)
+                for _ in range(depth - in_context_start - 1)
             ])
         else:
             self.register_tokens = None
@@ -370,9 +372,10 @@ class JiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
-                ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, self.hidden_size)
+                token_dim = self.ctx_out.in_features
+                ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, token_dim)
+                ctx = self.ctx_out(ctx)                                             
                 ctx = ctx + self.in_context_posemb
-                ctx = self.layer_wise_ctx_MLPs[start_idx](ctx)
                 x = torch.cat([ctx, x], dim=1)
                 rope = self.feat_rope_incontext
                 start_idx += 1
