@@ -378,7 +378,6 @@ class JiT(nn.Module):
                 ctx = ctx + self.in_context_posemb
                 x = torch.cat([ctx, x], dim=1)
                 rope = self.feat_rope_incontext
-                start_idx += 1
             if self.in_context_len > 0 and i > self.in_context_start:
                 ctx = x[:, :prefix_len, :]  
                 x = x[:, prefix_len:, :]  
