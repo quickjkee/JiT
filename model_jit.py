@@ -248,22 +248,21 @@ class JiT(nn.Module):
 
         # in-context
         if self.in_context_len > 0:
-            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, 512), requires_grad=True)
             nn.init.normal_(self.in_context_posemb, std=0.02)
             self.y_to_ctx = nn.Sequential(
-                RMSNorm(hidden_size, eps=1e-6),
-                nn.Linear(hidden_size, 256),
+                nn.Linear(hidden_size, 512),
                 nn.SiLU(),
-                nn.Linear(256, self.in_context_len * 756),
+                nn.Linear(512, self.in_context_len * 512),
             )
-            self.ctx_out = nn.Linear(756, hidden_size) 
+            self.ctx_out = nn.Linear(512, hidden_size) 
 
-            self.layer_wise_ctx_MLPs = nn.ModuleList([
-                nn.Sequential(
-                        RMSNorm(hidden_size, eps=1e-6),
-                        SwiGLUFFN(hidden_size, int(hidden_size * 4), drop=proj_drop))
-                for _ in range(depth - in_context_start - 1)
-            ])
+            #self.layer_wise_ctx_MLPs = nn.ModuleList([
+            #    nn.Sequential(
+            #            RMSNorm(hidden_size, eps=1e-6),
+            #            SwiGLUFFN(hidden_size, int(hidden_size * 4), drop=proj_drop))
+            #    for _ in range(depth - in_context_start - 1)
+            #])
         else:
             self.register_tokens = None
             self.in_context_posemb = None
@@ -374,16 +373,18 @@ class JiT(nn.Module):
             if self.in_context_len > 0 and i == self.in_context_start:
                 token_dim = self.ctx_out.in_features
                 ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, token_dim)
-                ctx = self.ctx_out(ctx)                                             
                 ctx = ctx + self.in_context_posemb
+                ctx = self.ctx_out(ctx)                                             
                 x = torch.cat([ctx, x], dim=1)
                 rope = self.feat_rope_incontext
+            """
             if self.in_context_len > 0 and i > self.in_context_start:
                 ctx = x[:, :prefix_len, :]  
                 x = x[:, prefix_len:, :]  
                 ctx = self.layer_wise_ctx_MLPs[start_idx](ctx)
                 x = torch.cat([ctx, x], dim=1)
                 start_idx += 1
+            """
             x = block(x, c, rope)
 
         if in_context_len > 0:
