@@ -323,7 +323,6 @@ class JiT(nn.Module):
         bottleneck_dim=128,
         in_context_len=32,
         in_context_start=8,
-        reg_len=8, 
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -335,7 +334,6 @@ class JiT(nn.Module):
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
         self.num_classes = num_classes
-        self.reg_len = reg_len
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -362,7 +360,7 @@ class JiT(nn.Module):
         # rope
         half_head_dim = hidden_size // num_heads // 2
         hw_seq_len = input_size // patch_size
-        prefix_len = (self.in_context_len if self.in_context_len > 0 else 0) + (self.reg_len if self.in_context_len > 0 else 0)
+        prefix_len = self.in_context_len
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
@@ -456,9 +454,8 @@ class JiT(nn.Module):
                 x = torch.cat([in_context_tokens, x], dim=1)
             x = block(x, c, self.feat_rope_incontext, self.in_context_len)
 
-        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
         if self.in_context_len > 0:
-            x = x[:, prefix_len:, :]    
+            x = x[:, self.in_context_len:, :]    
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
@@ -468,7 +465,7 @@ class JiT(nn.Module):
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=24, reg_len=8, in_context_start=4,
+               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=24,  in_context_start=4,
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
