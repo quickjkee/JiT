@@ -248,12 +248,12 @@ class JiT(nn.Module):
 
         # in-context
         if self.in_context_len > 0:
-            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, 768), requires_grad=True)
+            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             nn.init.normal_(self.in_context_posemb, std=0.02)
             self.y_to_ctx = nn.Sequential(
-                nn.Linear(hidden_size, 768),
+                nn.Linear(hidden_size, hidden_size),
                 nn.SiLU(),
-                nn.Linear(768, self.in_context_len * 768),
+                nn.Linear(hidden_size, self.in_context_len * hidden_size),
             )
         else:
             self.register_tokens = None
@@ -362,8 +362,7 @@ class JiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
-                token_dim = self.ctx_out.in_features
-                ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, token_dim)
+                ctx = self.y_to_ctx(y_emb).view(-1, self.in_context_len, 768)
                 ctx = ctx + self.in_context_posemb
                 x = torch.cat([ctx, x], dim=1)
                 rope = self.feat_rope_incontext
