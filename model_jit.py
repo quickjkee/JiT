@@ -258,25 +258,27 @@ class DualJiTBlock(nn.Module):
         self.norm1_context = RMSNorm(hidden_size, eps=1e-6)
 
         self.attn = DualAttention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                              attn_drop=attn_drop, proj_drop=proj_drop)
+                                  attn_drop=attn_drop, proj_drop=proj_drop)
 
         self.norm2 = RMSNorm(hidden_size, eps=1e-6)
         self.norm2_context = RMSNorm(hidden_size, eps=1e-6)
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
-        self.mlp_context = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(hidden_size, 12 * hidden_size, bias=True)
+            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        )
+        self.adaLN_modulation_context = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
     @torch.compile
     def forward(self, x,  c, feat_rope=None, in_context_len=0):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp, \
-        shift_msa_context, scale_msa_context, gate_msa_context, shift_mlp_context, scale_mlp_context, gate_mlp_context \
-             = self.adaLN_modulation(c).chunk(12, dim=-1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
+        shift_msa_context, scale_msa_context, gate_msa_context, shift_mlp_context, scale_mlp_context, gate_mlp_context = self.adaLN_modulation_context(c).chunk(6, dim=-1)
 
         x_patch = x[:, in_context_len:, :]  
         x_registers = x[:, :in_context_len, :]  
@@ -289,10 +291,14 @@ class DualJiTBlock(nn.Module):
         x_registers = x_registers + gate_msa_context.unsqueeze(1) * x_registers_1
 
         # Part 2. MLP branch
-        x_patch = x_patch + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x_patch), shift_mlp, scale_mlp))
-        x_registers = x_registers + gate_mlp_context.unsqueeze(1) * self.mlp_context(modulate(self.norm2_context(x_registers), 
-                                                                                              shift_mlp_context, scale_mlp_context)
-                                                                                    )
+        x_patch_1 = modulate(self.norm2(x_patch), shift_mlp, scale_mlp)
+        x_registers_1 = modulate(self.norm2_context(x_registers), shift_mlp_context, scale_mlp_context)
+        x = self.mlp(torch.cat([x_registers, x_patch], dim=1))
+        x_patch_2 = x[:, in_context_len:, :]  
+        x_registers_2 = x[:, :in_context_len, :]  
+        x_patch = x_patch + gate_mlp.unsqueeze(1) * x_patch_2
+        x_registers = x_registers + gate_mlp_context.unsqueeze(1) * x_registers_2
+
         # Part 3. Concat
         x = torch.cat([x_registers, x_patch], dim=1)
         return x
@@ -316,7 +322,8 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8
+        in_context_start=8,
+        reg_len=8, 
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -328,6 +335,7 @@ class JiT(nn.Module):
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
         self.num_classes = num_classes
+        self.reg_len = reg_len
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -354,32 +362,19 @@ class JiT(nn.Module):
         # rope
         half_head_dim = hidden_size // num_heads // 2
         hw_seq_len = input_size // patch_size
-        prefix_len = self.in_context_len
+        prefix_len = (self.in_context_len if self.in_context_len > 0 else 0) + (self.reg_len if self.in_context_len > 0 else 0)
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
             num_cls_token=prefix_len,  
         )
-        self.feat_rope = VisionRotaryEmbeddingFast(
-            dim=half_head_dim,
-            pt_seq_len=hw_seq_len,
-            num_cls_token=prefix_len
-        )
 
-        # transformer dual
-        self.dual_blocks = nn.ModuleList([
+        # transformer
+        self.blocks = nn.ModuleList([
             DualJiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
                         attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
                         proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
-            for i in range(self.in_context_start)
-        ])
-
-        # transformer single
-        self.single_blocks = nn.ModuleList([
-            JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
-                     attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
-            for i in range(self.in_context_start, depth)
+            for i in range(depth)
         ])
 
         # linear predict
@@ -414,12 +409,7 @@ class JiT(nn.Module):
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
         # Zero-out adaLN modulation layers:
-        for block in self.single_blocks:
-            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
-            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
-
-        # Zero-out adaLN modulation layers:
-        for block in self.dual_blocks:
+        for block in self.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
@@ -459,20 +449,16 @@ class JiT(nn.Module):
         x = self.x_embedder(x)          # (B, N, D)
         x = x + self.pos_embed          # (B, N, D)
 
-        # Dual blocks
-        for i, block in enumerate(self.dual_blocks):
-            if i == 0:
+        for i, block in enumerate(self.blocks):
+            if self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
             x = block(x, c, self.feat_rope_incontext, self.in_context_len)
 
-        # Single blocks
-        for i, block in enumerate(self.single_blocks):
-            x = block(x, c, self.feat_rope)
-
+        prefix_len = (self.in_context_len + self.reg_len) if (self.in_context_len > 0) else 0
         if self.in_context_len > 0:
-            x = x[:, self.in_context_len:, :]    
+            x = x[:, prefix_len:, :]    
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
@@ -482,7 +468,7 @@ class JiT(nn.Module):
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=24, in_context_start=4,
+               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=24, reg_len=8, in_context_start=4,
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
