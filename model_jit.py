@@ -293,7 +293,7 @@ class DualJiTBlock(nn.Module):
         # Part 2. MLP branch
         x_patch_1 = modulate(self.norm2(x_patch), shift_mlp, scale_mlp)
         x_registers_1 = modulate(self.norm2_context(x_registers), shift_mlp_context, scale_mlp_context)
-        x = self.mlp(torch.cat([x_registers, x_patch], dim=1))
+        x = self.mlp(torch.cat([x_registers_1, x_patch_1], dim=1))
         x_patch_2 = x[:, in_context_len:, :]  
         x_registers_2 = x[:, :in_context_len, :]  
         x_patch = x_patch + gate_mlp.unsqueeze(1) * x_patch_2
