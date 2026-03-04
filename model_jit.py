@@ -261,7 +261,6 @@ class DualJiTBlock(nn.Module):
                                   attn_drop=attn_drop, proj_drop=proj_drop)
 
         self.norm2 = RMSNorm(hidden_size, eps=1e-6)
-        self.norm2_context = RMSNorm(hidden_size, eps=1e-6)
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
@@ -285,12 +284,8 @@ class DualJiTBlock(nn.Module):
         x_patch = x_patch + gate_msa.unsqueeze(1) * x_patch_1
 
         # Part 2. MLP branch
-        x_patch_1 = modulate(self.norm2(x_patch), shift_mlp, scale_mlp)
-        x_registers_1 = self.norm2_context(x_registers)
-        x = self.mlp(torch.cat([x_registers_1, x_patch_1], dim=1))
-        x_patch_2 = x[:, in_context_len:, :]  
-        x_registers = x[:, :in_context_len, :]  
-        x_patch = x_patch + gate_mlp.unsqueeze(1) * x_patch_2
+        x_patch_1 = self.mlp(modulate(self.norm2(x_patch), shift_mlp, scale_mlp))
+        x_patch = x_patch + gate_mlp.unsqueeze(1) * x_patch_1
 
         # Part 3. Concat
         x = torch.cat([x_registers, x_patch], dim=1)
