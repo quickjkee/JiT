@@ -257,10 +257,11 @@ class DualJiTBlock(nn.Module):
         self.norm1 = RMSNorm(hidden_size, eps=1e-6)
         self.norm1_context = RMSNorm(hidden_size, eps=1e-6)
 
-        self.attn = DualAttention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                                  attn_drop=attn_drop, proj_drop=proj_drop)
+        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
+                              attn_drop=attn_drop, proj_drop=proj_drop)
 
         self.norm2 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm2_context = RMSNorm(hidden_size, eps=1e-6)
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
@@ -269,23 +270,40 @@ class DualJiTBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
+        self.adaLN_modulation_context = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        )
 
     @torch.compile
     def forward(self, x,  c, feat_rope=None, in_context_len=0):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)  # context
+        shift_msa_context, scale_msa_context, gate_msa_context, shift_mlp_context, scale_mlp_context, gate_mlp_context = self.adaLN_modulation_context(c).chunk(6, dim=-1) # registers
 
         x_patch = x[:, in_context_len:, :]  
         x_registers = x[:, :in_context_len, :]  
 
         # Part 1. Attention branch
         x_patch_1 = modulate(self.norm1(x_patch), shift_msa, scale_msa)
-        x_registers_1 = self.norm1_context(x_registers)
-        x_patch_1, x_registers = self.attn(x_registers_1, x_patch_1, rope=feat_rope)
-        x_patch = x_patch + gate_msa.unsqueeze(1) * x_patch_1
+        x_registers_1 = modulate(self.norm1_context(x_registers), shift_msa_context, scale_msa_context)
+        x = self.attn(torch.cat([x_registers_1, x_patch_1], dim=1), rope=feat_rope)
+
+        x_patch_attn = x[:, in_context_len:, :]  
+        x_registers_attn = x[:, :in_context_len, :]  
+        
+        x_patch = x_patch + gate_msa.unsqueeze(1) * x_patch_attn
+        x_registers = x_registers + gate_msa_context.unsqueeze(1) * x_registers_attn
 
         # Part 2. MLP branch
-        x_patch_1 = self.mlp(modulate(self.norm2(x_patch), shift_mlp, scale_mlp))
-        x_patch = x_patch + gate_mlp.unsqueeze(1) * x_patch_1
+        x_patch_1 = modulate(self.norm2(x_patch), shift_mlp, scale_mlp)
+        x_registers_1 = modulate(self.norm2_context(x_registers), shift_mlp_context, scale_mlp_context)
+        x = self.mlp(torch.cat([x_registers_1, x_patch_1]), dim=1)
+
+        x_patch_mlp = x[:, in_context_len:, :]  
+        x_registers_mlp = x[:, :in_context_len, :]
+          
+        x_patch = x_patch + gate_mlp.unsqueeze(1) * x_patch_mlp
+        x_registers = x_registers + gate_mlp_context.unsqueeze(1) * x_registers_mlp
 
         # Part 3. Concat
         x = torch.cat([x_registers, x_patch], dim=1)
