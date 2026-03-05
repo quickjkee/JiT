@@ -265,6 +265,7 @@ class DualJiTBlock(nn.Module):
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        self.mlp_context = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
@@ -290,20 +291,15 @@ class DualJiTBlock(nn.Module):
 
         x_patch_attn = x[:, in_context_len:, :]  
         x_registers_attn = x[:, :in_context_len, :]  
-        
+    
         x_patch = x_patch + gate_msa.unsqueeze(1) * x_patch_attn
         x_registers = x_registers + gate_msa_context.unsqueeze(1) * x_registers_attn
 
         # Part 2. MLP branch
-        x_patch_1 = modulate(self.norm2(x_patch), shift_mlp, scale_mlp)
-        x_registers_1 = modulate(self.norm2_context(x_registers), shift_mlp_context, scale_mlp_context)
-        x = self.mlp(torch.cat([x_registers_1, x_patch_1], dim=1))
-
-        x_patch_mlp = x[:, in_context_len:, :]  
-        x_registers_mlp = x[:, :in_context_len, :]
-          
-        x_patch = x_patch + gate_mlp.unsqueeze(1) * x_patch_mlp
-        x_registers = x_registers + gate_mlp_context.unsqueeze(1) * x_registers_mlp
+        x_patch_1 = self.mlp(modulate(self.norm2(x_patch), shift_mlp, scale_mlp))
+        x_registers_1 = self.mlp_context(modulate(self.norm2_context(x_registers), shift_mlp_context, scale_mlp_context))          
+        x_patch = x_patch + gate_mlp.unsqueeze(1) * x_patch_1
+        x_registers = x_registers + gate_mlp_context.unsqueeze(1) * x_registers_1
 
         # Part 3. Concat
         x = torch.cat([x_registers, x_patch], dim=1)
