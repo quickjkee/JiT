@@ -246,8 +246,6 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            #self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            #torch.nn.init.normal_(self.register_tokens, std=.02)
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
@@ -330,7 +328,13 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y):
+    def incontext_diffusion_noise(self, in_context_tokens, t):
+        e = torch.randn_like(in_context_tokens)
+        in_context_tokens_noised = t * in_context_tokens + (1 - t) * e
+        in_context_target = (in_context_tokens - in_context_tokens_noised) / (1 - t).clamp_min(5e-2)
+        return in_context_tokens_noised, in_context_target
+
+    def forward(self, x, t, y, drop_loss=False):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -349,20 +353,27 @@ class JiT(nn.Module):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens += self.in_context_posemb
-                x = torch.cat([in_context_tokens, x], dim=1)
-                
-                #register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                #x = torch.cat([register_tokens, x], dim=1)
+                in_context_tokens_noised, in_context_target = self.incontext_diffusion_noise(in_context_tokens, t=t)
+                in_context_tokens_noised += self.in_context_posemb
+
+                x = torch.cat([in_context_tokens_noised, x], dim=1)
                 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
+        if drop_loss:
+            in_context_pred = x[:, :self.in_context_len]
+            in_context_pred = (in_context_pred - in_context_tokens_noised) / (1 - t).clamp_min(self.t_eps)
+            loss = (in_context_target - in_context_pred) ** 2
+            loss = loss.mean(dim=(1, 2, 3)).mean()
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        return output
+        if drop_loss:
+            return output, loss
+        else:
+            return output
 
 
 def JiT_B_16(**kwargs):

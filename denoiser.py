@@ -102,9 +102,10 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred = self.net(z, t.flatten(), labels_dropped)
+        x_pred, incontext_loss = self.net(z, t.flatten(), labels_dropped, drop_loss=True)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
+        loss = loss + 0.03 * incontext_loss
 
         return loss
 
