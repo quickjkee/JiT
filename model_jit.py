@@ -154,6 +154,7 @@ class DualAttention(nn.Module):
         self.proj_context = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
+
     def forward(self, c, x, rope):
         B, N, C = x.shape
         _, in_context_len, _ = c.shape
@@ -161,8 +162,8 @@ class DualAttention(nn.Module):
         # Patch qkv
         qkv = self.qkv(torch.cat([c, x], dim=1)).reshape(B, N + in_context_len, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2] 
-        q_c, q_x = q[:, :in_context_len, :], q[:, in_context_len:, :]  
-        k_c, k_x = k[:, :in_context_len, :], k[:, in_context_len:, :]  
+        q_c, q_x = q[:, :, :in_context_len, :], q[:, :, in_context_len:, :]  
+        k_c, k_x = k[:, :, :in_context_len, :], k[:, :, in_context_len:, :]  
 
         q_x = self.q_norm(q_x)
         k_x = self.k_norm(k_x)
