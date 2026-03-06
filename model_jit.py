@@ -149,7 +149,6 @@ class DualAttention(nn.Module):
         self.k_norm_context = RMSNorm(head_dim) if qk_norm else nn.Identity()
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.qkv_context = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_context = nn.Linear(dim, dim)
@@ -160,21 +159,19 @@ class DualAttention(nn.Module):
         _, in_context_len, _ = c.shape
 
         # Patch qkv
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(torch.cat([c, x], dim=1)).reshape(B, N + in_context_len, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2] 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        q_c, q_x = q[:, :in_context_len, :], q[:, in_context_len:, :]  
+        k_c, k_x = k[:, :in_context_len, :], k[:, in_context_len:, :]  
 
-        # Registers qkv
-        qkv_context = self.qkv_context(c).reshape(B, in_context_len, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q_context, k_context, v_context = qkv_context[0], qkv_context[1], qkv_context[2] 
-        q_context = self.q_norm_context(q_context)
-        k_context = self.k_norm_context(k_context)
+        q_x = self.q_norm(q_x)
+        k_x = self.k_norm(k_x)
+        q_c = self.q_norm_context(q_c)
+        k_c = self.k_norm_context(k_c)
 
         # Concat
-        q = torch.cat([q_context, q], dim=2)
-        k = torch.cat([k_context, k], dim=2)
-        v = torch.cat([v_context, v], dim=2)
+        q = torch.cat([q_c, q_x], dim=2)
+        k = torch.cat([k_c, k_x], dim=2)
 
         # Attn part
         q = rope(q)
@@ -257,7 +254,7 @@ class DualJiTBlock(nn.Module):
         self.norm1 = RMSNorm(hidden_size, eps=1e-6)
         self.norm1_context = RMSNorm(hidden_size, eps=1e-6)
 
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
+        self.attn = DualAttention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
                               attn_drop=attn_drop, proj_drop=proj_drop)
 
         self.norm2 = RMSNorm(hidden_size, eps=1e-6)
@@ -271,6 +268,7 @@ class DualJiTBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
+
         self.adaLN_modulation_context = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
@@ -278,8 +276,8 @@ class DualJiTBlock(nn.Module):
 
     @torch.compile
     def forward(self, x,  c, feat_rope=None, in_context_len=0):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)  # context
-        shift_msa_context, scale_msa_context, gate_msa_context, shift_mlp_context, scale_mlp_context, gate_mlp_context = self.adaLN_modulation_context(c).chunk(6, dim=-1) # registers
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
+        shift_msa_context, scale_msa_context, gate_msa_context, shift_mlp_context, scale_mlp_context, gate_mlp_context = self.adaLN_modulation_context(c).chunk(6, dim=-1)
 
         x_patch = x[:, in_context_len:, :]  
         x_registers = x[:, :in_context_len, :]  
@@ -287,20 +285,15 @@ class DualJiTBlock(nn.Module):
         # Part 1. Attention branch
         x_patch_1 = modulate(self.norm1(x_patch), shift_msa, scale_msa)
         x_registers_1 = modulate(self.norm1_context(x_registers), shift_msa_context, scale_msa_context)
-        x = self.attn(torch.cat([x_registers_1, x_patch_1], dim=1), rope=feat_rope)
-
-        x_patch_attn = x[:, in_context_len:, :]  
-        x_registers_attn = x[:, :in_context_len, :]  
-    
-        x_patch = x_patch + gate_msa.unsqueeze(1) * x_patch_attn
-        x_registers = x_registers + gate_msa_context.unsqueeze(1) * x_registers_attn
+        x_patch_1, x_registers_1 = self.attn(x_registers_1, x_patch_1, rope=feat_rope)
+        x_patch = x_patch + gate_msa.unsqueeze(1) * x_patch_1
+        x_registers = x_registers + gate_msa_context.unsqueeze(1) * x_registers_1
 
         # Part 2. MLP branch
-        x_patch_1 = self.mlp(modulate(self.norm2(x_patch), shift_mlp, scale_mlp))
-        x_registers_1 = self.mlp_context(modulate(self.norm2_context(x_registers), shift_mlp_context, scale_mlp_context))          
-        x_patch = x_patch + gate_mlp.unsqueeze(1) * x_patch_1
-        x_registers = x_registers + gate_mlp_context.unsqueeze(1) * x_registers_1
-
+        x_patch = x_patch + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x_patch), shift_mlp, scale_mlp))
+        x_registers = x_registers + gate_mlp_context.unsqueeze(1) * self.mlp_context(modulate(self.norm2_context(x_registers), 
+                                                                                              shift_mlp_context, scale_mlp_context)
+                                                                                    )
         # Part 3. Concat
         x = torch.cat([x_registers, x_patch], dim=1)
         return x
@@ -462,8 +455,7 @@ class JiT(nn.Module):
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
         return output
-
-
+   
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
