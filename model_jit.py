@@ -334,7 +334,7 @@ class JiT(nn.Module):
         in_context_target = (in_context_tokens - in_context_tokens_noised) / (1 - t).clamp_min(5e-2)
         return in_context_tokens_noised, in_context_target
 
-    def forward(self, x, t, y, drop_loss=False):
+    def forward(self, x, t, y, incontext_train_regime=False):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -348,6 +348,7 @@ class JiT(nn.Module):
         # forward JiT
         x = self.x_embedder(x)
         x += self.pos_embed
+        t = t.view(-1, *([1] * (x.ndim - 1)))
 
         for i, block in enumerate(self.blocks):
             # in-context
@@ -361,16 +362,16 @@ class JiT(nn.Module):
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
-        if drop_loss:
+        if incontext_train_regime:
             in_context_pred = x[:, :self.in_context_len]
-            in_context_pred = (in_context_pred - in_context_tokens_noised) / (1 - t).clamp_min(self.t_eps)
+            in_context_pred = (in_context_pred - in_context_tokens_noised) / (1 - t).clamp_min(5e-2)
             loss = (in_context_target - in_context_pred) ** 2
-            loss = loss.mean(dim=(1, 2, 3)).mean()
+            loss = loss.mean(dim=(1, 2)).mean()
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        if drop_loss:
+        if incontext_train_regime:
             return output, loss
         else:
             return output
