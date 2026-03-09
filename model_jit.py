@@ -345,6 +345,7 @@ class JiT(nn.Module):
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
+        in_context_target = None
 
         # forward JiT
         x = self.x_embedder(x)
@@ -359,7 +360,6 @@ class JiT(nn.Module):
                     in_context_tokens_noised, in_context_target = self.incontext_diffusion_noise(in_context_tokens, t=t)
                     in_context_tokens_noised += self.in_context_posemb
                 x = torch.cat([in_context_tokens_noised, x], dim=1) 
-                
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
@@ -368,7 +368,7 @@ class JiT(nn.Module):
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        if in_context_tokens_noised is None:
+        if in_context_target is not None:
             return output, (in_context_pred, in_context_target, in_context_tokens_noised)
         else:
             return output, in_context_pred

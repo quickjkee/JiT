@@ -7,9 +7,9 @@ from torchvision.transforms import Normalize
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 HIDDEN_SIZES = {
-    'JiT_B_16': 768,
-    'JiT_L_16': 1024,
-    'JiT_H_16': 1280
+    'JiT-B/16': 768,
+    'JiT-L/16': 1024,
+    'JiT-H/16': 1280
 }
 
 
@@ -113,7 +113,7 @@ class Denoiser(nn.Module):
         x_pred, incontext_group = self.net(z, t.flatten(), labels_dropped)
         in_context_pred, in_context_target, in_context_tokens_noised = incontext_group
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-        in_context_pred = (in_context_pred - in_context_tokens_noised) / (1 - t).clamp_min(self.t_eps)
+        in_context_pred = (in_context_pred - in_context_tokens_noised) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
 
         loss = diffusion_loss(v, v_pred)
         loss_in_context = ((in_context_target - in_context_pred) ** 2).mean(dim=(1, 2)).mean()
@@ -126,7 +126,7 @@ class Denoiser(nn.Module):
         device = labels.device
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
-        in_context_tokens = self.noise_scale * torch.randn(bsz, 3, self.in_context_len, self.hidden_size, device=device)
+        in_context_tokens = self.noise_scale * torch.randn(bsz, self.in_context_len, self.hidden_size, device=device)
         timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
 
         if self.method == "euler":
@@ -150,25 +150,25 @@ class Denoiser(nn.Module):
         # conditional
         x_cond, x_incontext_cond = self.net(z, t.flatten(), labels, in_context_tokens)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
-        v_incontext_cond = (x_incontext_cond - in_context_tokens) / (1.0 - t).clamp_min(self.t_eps)
+        v_incontext_cond = (x_incontext_cond - in_context_tokens) / (1.0 - t.squeeze(1)).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond, x_incontext_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes))
+        x_uncond, x_incontext_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), in_context_tokens)
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
-        v_incontext_uncond = (x_incontext_uncond - in_context_tokens) / (1.0 - t).clamp_min(self.t_eps)
+        v_incontext_uncond = (x_incontext_uncond - in_context_tokens) / (1.0 - t.squeeze(1)).clamp_min(self.t_eps)
 
         # cfg interval
         low, high = self.cfg_interval
         interval_mask = (t < high) & ((low == 0) | (t > low))
         cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)
 
-        return v_uncond + cfg_scale_interval * (v_cond - v_uncond), v_incontext_uncond + cfg_scale_interval * (v_incontext_cond - v_incontext_uncond)
+        return v_uncond + cfg_scale_interval * (v_cond - v_uncond), v_incontext_uncond + cfg_scale_interval.squeeze(1) * (v_incontext_cond - v_incontext_uncond)
 
     @torch.no_grad()
     def _euler_step(self, z, t, t_next, labels, in_context_tokens):
         v_pred, v_incontext_pred = self._forward_sample(z, t, labels, in_context_tokens)
         z_next = z + (t_next - t) * v_pred
-        z_incontext_next = in_context_tokens + (t_next - t) * v_incontext_pred
+        z_incontext_next = in_context_tokens + (t_next.squeeze(1) - t.squeeze(1)) * v_incontext_pred
         return z_next, z_incontext_next
 
     @torch.no_grad()
@@ -176,13 +176,13 @@ class Denoiser(nn.Module):
         v_pred_t, v_incontext_pred_t = self._forward_sample(z, t, labels, in_context_tokens)
 
         z_next_euler = z + (t_next - t) * v_pred_t
-        z_incontext_next_euler = in_context_tokens + (t_next - t) * v_incontext_pred_t
+        z_incontext_next_euler = in_context_tokens + (t_next.squeeze(1) - t.squeeze(1)) * v_incontext_pred_t
         v_pred_t_next, v_incontext_pred_t_next = self._forward_sample(z_next_euler, t_next, labels, z_incontext_next_euler)
 
         v_pred = 0.5 * (v_pred_t + v_pred_t_next)
         v_incontext_pred = 0.5 * (v_incontext_pred_t + v_incontext_pred_t_next)
         z_next = z + (t_next - t) * v_pred
-        z_incontext_next = in_context_tokens + (t_next - t) * v_incontext_pred
+        z_incontext_next = in_context_tokens + (t_next.squeeze(1) - t.squeeze(1)) * v_incontext_pred
 
         return z_next, z_incontext_next
 
