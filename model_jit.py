@@ -357,7 +357,8 @@ class JiT(nn.Module):
                 in_context_tokens_noised, in_context_target = self.incontext_diffusion_noise(in_context_tokens, t=t)
                 in_context_tokens_noised += self.in_context_posemb
 
-                x = torch.cat([in_context_tokens_noised, x], dim=1)
+                x = torch.cat([in_context_tokens_noised, x], dim=1) 
+                
                 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
