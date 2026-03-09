@@ -62,6 +62,7 @@ class Denoiser(nn.Module):
         
         self.dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", trust_repo=True, force_reload=False)
         self.dinov2_vitb14.eval().requires_grad_(False)
+        self.do_dino_registers = args.do_dino_registers
 
 
         self.img_size = args.img_size
@@ -106,13 +107,13 @@ class Denoiser(nn.Module):
             x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
             x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
             x_registers = self.dinov2_vitb14.forward_features(x_dino)['x_norm_regtokens']
-            x_registers = x_registers.unsqueeze(1).repeat(1, self.in_context_len, 1)
+            x_registers = x_registers.repeat(1, self.in_context_len // 4, 1)
         else:
             y_emb = self.net.y_embedder(labels)
             x_registers = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
 
-        e = torch.randn_like(x) * self.noise_scale
-        z_registers = t.flatten() * x_registers + (1 - t.squeeze(1)) * e
+        e = torch.randn_like(x_registers) * self.noise_scale
+        z_registers = t.squeeze(1) * x_registers + (1 - t.squeeze(1)) * e
         v_registers = (x_registers - z_registers) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
         return z_registers, v_registers
 

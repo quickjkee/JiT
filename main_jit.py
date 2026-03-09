@@ -35,6 +35,7 @@ def get_args_parser():
     parser.add_argument('--reg_len', default=0, type=int)
     parser.add_argument('--in_context_start', default=4, type=int)
     parser.add_argument('--in_context_end', default=100, type=int)
+    parser.add_argument('--do_dino_registers', action='store_true')
 
     # training
     parser.add_argument('--epochs', default=200, type=int)
