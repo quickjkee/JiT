@@ -334,7 +334,8 @@ class JiT(nn.Module):
         in_context_target = (in_context_tokens - in_context_tokens_noised) / (1 - t).clamp_min(5e-2)
         return in_context_tokens_noised, in_context_target
 
-    def forward(self, x, t, y, incontext_train_regime=False):
+    def forward(self, x, t, y, 
+                in_context_tokens_noised=None):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -353,29 +354,24 @@ class JiT(nn.Module):
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens_noised, in_context_target = self.incontext_diffusion_noise(in_context_tokens, t=t)
-                in_context_tokens_noised += self.in_context_posemb
-
+                if in_context_tokens_noised is None:
+                    in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                    in_context_tokens_noised, in_context_target = self.incontext_diffusion_noise(in_context_tokens, t=t)
+                    in_context_tokens_noised += self.in_context_posemb
                 x = torch.cat([in_context_tokens_noised, x], dim=1) 
-                
                 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
-        if incontext_train_regime:
-            in_context_pred = x[:, :self.in_context_len]
-            in_context_pred = (in_context_pred - in_context_tokens_noised) / (1 - t).clamp_min(5e-2)
-            loss = (in_context_target - in_context_pred) ** 2
-            loss = loss.mean(dim=(1, 2)).mean()
+        in_context_pred = x[:, :self.in_context_len]
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        if incontext_train_regime:
-            return output, loss
+        if in_context_tokens_noised is None:
+            return output, (in_context_pred, in_context_target, in_context_tokens_noised)
         else:
-            return output
+            return output, in_context_pred
 
 
 def JiT_B_16(**kwargs):

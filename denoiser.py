@@ -6,6 +6,12 @@ from model_jit import JiT_models
 from torchvision.transforms import Normalize
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
+HIDDEN_SIZES = {
+    'JiT_B_16': 768,
+    'JiT_L_16': 1024,
+    'JiT_H_16': 1280
+}
+
 
 def print_trainable(model):
     total = 0
@@ -65,6 +71,8 @@ class Denoiser(nn.Module):
 
         self.img_size = args.img_size
         self.num_classes = args.class_num
+        self.in_context_len = args.in_context_len
+        self.hidden_size = HIDDEN_SIZES[args.model]
         self.args = args
 
         self.label_drop_prob = args.label_drop_prob
@@ -102,10 +110,14 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred, incontext_loss = self.net(z, t.flatten(), labels_dropped, incontext_train_regime=True)
+        x_pred, incontext_group = self.net(z, t.flatten(), labels_dropped)
+        in_context_pred, in_context_target, in_context_tokens_noised = incontext_group
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
+        in_context_pred = (in_context_pred - in_context_tokens_noised) / (1 - t).clamp_min(self.t_eps)
+
         loss = diffusion_loss(v, v_pred)
-        loss = loss + 0.05 * incontext_loss
+        loss_in_context = ((in_context_target - in_context_pred) ** 2).mean(dim=(1, 2)).mean()
+        loss = loss + 0.05 * loss_in_context
 
         return loss
 
@@ -114,6 +126,7 @@ class Denoiser(nn.Module):
         device = labels.device
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
+        in_context_tokens_noised = self.noise_scale * torch.randn(bsz, 3, self.in_context_len, self.hidden_size, device=device)
         timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
 
         if self.method == "euler":
@@ -127,44 +140,51 @@ class Denoiser(nn.Module):
         for i in range(self.steps - 1):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            z = stepper(z, t, t_next, labels)
+            z, in_context_tokens_noised = stepper(z, t, t_next, labels, in_context_tokens_noised)
         # last step euler
-        z = self._euler_step(z, timesteps[-2], timesteps[-1], labels)
+        z, in_context_tokens_noised = self._euler_step(z, timesteps[-2], timesteps[-1], labels, in_context_tokens_noised)
         return z
 
     @torch.no_grad()
-    def _forward_sample(self, z, t, labels):
+    def _forward_sample(self, z, t, labels, in_context_tokens_noised):
         # conditional
-        x_cond = self.net(z, t.flatten(), labels)
+        x_cond, x_incontext_cond = self.net(z, t.flatten(), labels, in_context_tokens_noised)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
+        v_incontext_cond = (x_incontext_cond - in_context_tokens_noised) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes))
+        x_uncond, x_incontext_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes))
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
+        v_incontext_uncond = (x_incontext_uncond - in_context_tokens_noised) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
         low, high = self.cfg_interval
         interval_mask = (t < high) & ((low == 0) | (t > low))
         cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)
 
-        return v_uncond + cfg_scale_interval * (v_cond - v_uncond)
+        return v_uncond + cfg_scale_interval * (v_cond - v_uncond), v_incontext_uncond + cfg_scale_interval * (v_incontext_cond - v_incontext_uncond)
 
     @torch.no_grad()
-    def _euler_step(self, z, t, t_next, labels):
-        v_pred = self._forward_sample(z, t, labels)
+    def _euler_step(self, z, t, t_next, labels, in_context_tokens_noised):
+        v_pred, v_incontext_pred = self._forward_sample(z, t, labels, in_context_tokens_noised)
         z_next = z + (t_next - t) * v_pred
-        return z_next
+        z_incontext_next = in_context_tokens_noised + (t_next - t) * v_incontext_pred
+        return z_next, z_incontext_next
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, labels):
-        v_pred_t = self._forward_sample(z, t, labels)
+    def _heun_step(self, z, t, t_next, labels, in_context_tokens_noised):
+        v_pred_t, v_incontext_pred_t = self._forward_sample(z, t, labels, in_context_tokens_noised)
 
         z_next_euler = z + (t_next - t) * v_pred_t
-        v_pred_t_next = self._forward_sample(z_next_euler, t_next, labels)
+        z_incontext_next_euler = in_context_tokens_noised + (t_next - t) * v_incontext_pred_t
+        v_pred_t_next, v_incontext_pred_t_next = self._forward_sample(z_next_euler, t_next, labels, z_incontext_next_euler)
 
         v_pred = 0.5 * (v_pred_t + v_pred_t_next)
+        v_incontext_pred = 0.5 * (v_incontext_pred_t + v_incontext_pred_t_next)
         z_next = z + (t_next - t) * v_pred
-        return z_next
+        z_incontext_next = in_context_tokens_noised + (t_next - t) * v_incontext_pred
+
+        return z_next, z_incontext_next
 
     @torch.no_grad()
     def update_ema(self):
