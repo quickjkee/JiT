@@ -1,7 +1,7 @@
-from ast import arg
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from model_jit import JiT_models
 from torchvision.transforms import Normalize
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
@@ -42,14 +42,6 @@ def diffusion_loss(v, v_pred):
     return loss
 
 
-def repa_loss(dino_feats, x_mid, t=None):
-    dino_feats = F.normalize(dino_feats, dim=-1) # [B,T,D]
-    x_mid = F.normalize(x_mid, dim=-1) # [B,T,D]
-    cos_sim = (dino_feats * x_mid).sum(dim=-1)    # [B,T]
-    loss_repa = -cos_sim.mean(dim=(1)).mean()
-    return loss_repa
-
-
 class Denoiser(nn.Module):
     def __init__(
         self,
@@ -67,6 +59,9 @@ class Denoiser(nn.Module):
                 in_context_start=args.in_context_start,
             )
         print_trainable(self.net)
+        
+        self.dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", trust_repo=True, force_reload=False)
+        self.dinov2_vitb14.eval().requires_grad(False)
 
 
         self.img_size = args.img_size
@@ -109,6 +104,13 @@ class Denoiser(nn.Module):
 
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
+
+        x_dino = F.interpolate(
+            x, size=(224, 224), mode="bicubic", align_corners=False
+        )
+        x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
+        x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
+        x_pred_dino = self.dinov2_vitb14(x_dino)
 
         x_pred, incontext_group = self.net(z, t.flatten(), labels_dropped)
         in_context_pred, in_context_target, in_context_tokens_noised = incontext_group
