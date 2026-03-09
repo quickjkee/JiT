@@ -126,7 +126,7 @@ class Denoiser(nn.Module):
         device = labels.device
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
-        in_context_tokens_noised = self.noise_scale * torch.randn(bsz, 3, self.in_context_len, self.hidden_size, device=device)
+        in_context_tokens = self.noise_scale * torch.randn(bsz, 3, self.in_context_len, self.hidden_size, device=device)
         timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
 
         if self.method == "euler":
@@ -140,22 +140,22 @@ class Denoiser(nn.Module):
         for i in range(self.steps - 1):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            z, in_context_tokens_noised = stepper(z, t, t_next, labels, in_context_tokens_noised)
+            z, in_context_tokens = stepper(z, t, t_next, labels, in_context_tokens)
         # last step euler
-        z, in_context_tokens_noised = self._euler_step(z, timesteps[-2], timesteps[-1], labels, in_context_tokens_noised)
+        z, in_context_tokens = self._euler_step(z, timesteps[-2], timesteps[-1], labels, in_context_tokens)
         return z
 
     @torch.no_grad()
-    def _forward_sample(self, z, t, labels, in_context_tokens_noised):
+    def _forward_sample(self, z, t, labels, in_context_tokens):
         # conditional
-        x_cond, x_incontext_cond = self.net(z, t.flatten(), labels, in_context_tokens_noised)
+        x_cond, x_incontext_cond = self.net(z, t.flatten(), labels, in_context_tokens)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
-        v_incontext_cond = (x_incontext_cond - in_context_tokens_noised) / (1.0 - t).clamp_min(self.t_eps)
+        v_incontext_cond = (x_incontext_cond - in_context_tokens) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
         x_uncond, x_incontext_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes))
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
-        v_incontext_uncond = (x_incontext_uncond - in_context_tokens_noised) / (1.0 - t).clamp_min(self.t_eps)
+        v_incontext_uncond = (x_incontext_uncond - in_context_tokens) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
         low, high = self.cfg_interval
@@ -165,24 +165,24 @@ class Denoiser(nn.Module):
         return v_uncond + cfg_scale_interval * (v_cond - v_uncond), v_incontext_uncond + cfg_scale_interval * (v_incontext_cond - v_incontext_uncond)
 
     @torch.no_grad()
-    def _euler_step(self, z, t, t_next, labels, in_context_tokens_noised):
-        v_pred, v_incontext_pred = self._forward_sample(z, t, labels, in_context_tokens_noised)
+    def _euler_step(self, z, t, t_next, labels, in_context_tokens):
+        v_pred, v_incontext_pred = self._forward_sample(z, t, labels, in_context_tokens)
         z_next = z + (t_next - t) * v_pred
-        z_incontext_next = in_context_tokens_noised + (t_next - t) * v_incontext_pred
+        z_incontext_next = in_context_tokens + (t_next - t) * v_incontext_pred
         return z_next, z_incontext_next
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, labels, in_context_tokens_noised):
-        v_pred_t, v_incontext_pred_t = self._forward_sample(z, t, labels, in_context_tokens_noised)
+    def _heun_step(self, z, t, t_next, labels, in_context_tokens):
+        v_pred_t, v_incontext_pred_t = self._forward_sample(z, t, labels, in_context_tokens)
 
         z_next_euler = z + (t_next - t) * v_pred_t
-        z_incontext_next_euler = in_context_tokens_noised + (t_next - t) * v_incontext_pred_t
+        z_incontext_next_euler = in_context_tokens + (t_next - t) * v_incontext_pred_t
         v_pred_t_next, v_incontext_pred_t_next = self._forward_sample(z_next_euler, t_next, labels, z_incontext_next_euler)
 
         v_pred = 0.5 * (v_pred_t + v_pred_t_next)
         v_incontext_pred = 0.5 * (v_incontext_pred_t + v_incontext_pred_t_next)
         z_next = z + (t_next - t) * v_pred
-        z_incontext_next = in_context_tokens_noised + (t_next - t) * v_incontext_pred
+        z_incontext_next = in_context_tokens + (t_next - t) * v_incontext_pred
 
         return z_next, z_incontext_next
 
