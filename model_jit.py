@@ -353,7 +353,7 @@ class JiT(nn.Module):
                 #x = torch.cat([in_context_tokens, x], dim=1)
                 
                 register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                register_tokens += self.in_context_posemb
+                register_tokens = register_tokens + self.in_context_posemb
                 x = torch.cat([register_tokens, x], dim=1)
                 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
