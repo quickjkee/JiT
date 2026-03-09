@@ -61,7 +61,7 @@ class Denoiser(nn.Module):
         print_trainable(self.net)
         
         self.dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", trust_repo=True, force_reload=False)
-        self.dinov2_vitb14.eval().requires_grad(False)
+        self.dinov2_vitb14.eval().requires_grad_(False)
 
 
         self.img_size = args.img_size
@@ -97,6 +97,25 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
+    @torch.no_grad()
+    def produce_registers(self, x, t, labels):
+        if self.do_dino_registers:
+            x_dino = F.interpolate(
+                x, size=(224, 224), mode="bicubic", align_corners=False
+            )
+            x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
+            x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
+            x_registers = self.dinov2_vitb14.forward_features(x_dino)['x_norm_regtokens']
+            x_registers = x_registers.unsqueeze(1).repeat(1, self.in_context_len, 1)
+        else:
+            y_emb = self.net.y_embedder(labels)
+            x_registers = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+
+        e = torch.randn_like(x) * self.noise_scale
+        z_registers = t.flatten() * x_registers + (1 - t.squeeze(1)) * e
+        v_registers = (x_registers - z_registers) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
+        return z_registers, v_registers
+
     def forward(self, x, labels):
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
@@ -104,21 +123,14 @@ class Denoiser(nn.Module):
 
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
+        z_registers, v_registers = self.produce_registers(x, t, labels_dropped)
 
-        x_dino = F.interpolate(
-            x, size=(224, 224), mode="bicubic", align_corners=False
-        )
-        x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
-        x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
-        x_pred_dino = self.dinov2_vitb14(x_dino)
-
-        x_pred, incontext_group = self.net(z, t.flatten(), labels_dropped)
-        in_context_pred, in_context_target, in_context_tokens_noised = incontext_group
+        x_pred, x_registers_pred = self.net(z, t.flatten(), labels_dropped, z_registers)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-        in_context_pred = (in_context_pred - in_context_tokens_noised) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
+        v_registers_pred = (x_registers_pred - z_registers) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
 
         loss = diffusion_loss(v, v_pred)
-        loss_in_context = ((in_context_target - in_context_pred) ** 2).mean(dim=(1, 2)).mean()
+        loss_in_context = ((v_registers - v_registers_pred) ** 2).mean(dim=(1, 2)).mean()
         loss = loss + 0.05 * loss_in_context
 
         return loss
@@ -128,7 +140,7 @@ class Denoiser(nn.Module):
         device = labels.device
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
-        in_context_tokens = self.noise_scale * torch.randn(bsz, self.in_context_len, self.hidden_size, device=device)
+        z_registers = self.noise_scale * torch.randn(bsz, self.in_context_len, self.hidden_size, device=device)
         timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
 
         if self.method == "euler":
@@ -142,51 +154,51 @@ class Denoiser(nn.Module):
         for i in range(self.steps - 1):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            z, in_context_tokens = stepper(z, t, t_next, labels, in_context_tokens)
+            z, z_registers = stepper(z, t, t_next, labels, z_registers)
         # last step euler
-        z, in_context_tokens = self._euler_step(z, timesteps[-2], timesteps[-1], labels, in_context_tokens)
+        z, z_registers = self._euler_step(z, timesteps[-2], timesteps[-1], labels, z_registers)
         return z
 
     @torch.no_grad()
-    def _forward_sample(self, z, t, labels, in_context_tokens):
+    def _forward_sample(self, z, t, labels, z_registers):
         # conditional
-        x_cond, x_incontext_cond = self.net(z, t.flatten(), labels, in_context_tokens)
+        x_cond, x_registers_cond = self.net(z, t.flatten(), labels, z_registers)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
-        v_incontext_cond = (x_incontext_cond - in_context_tokens) / (1.0 - t.squeeze(1)).clamp_min(self.t_eps)
+        v_registers_cond = (x_registers_cond - z_registers) / (1.0 - t.squeeze(1)).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond, x_incontext_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), in_context_tokens)
+        x_uncond, x_registers_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), z_registers)
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
-        v_incontext_uncond = (x_incontext_uncond - in_context_tokens) / (1.0 - t.squeeze(1)).clamp_min(self.t_eps)
+        v_registers_uncond = (x_registers_uncond - z_registers) / (1.0 - t.squeeze(1)).clamp_min(self.t_eps)
 
         # cfg interval
         low, high = self.cfg_interval
         interval_mask = (t < high) & ((low == 0) | (t > low))
         cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)
 
-        return v_uncond + cfg_scale_interval * (v_cond - v_uncond), v_incontext_uncond + cfg_scale_interval.squeeze(1) * (v_incontext_cond - v_incontext_uncond)
+        return v_uncond + cfg_scale_interval * (v_cond - v_uncond), v_registers_uncond + cfg_scale_interval.squeeze(1) * (v_registers_cond - v_registers_uncond)
 
     @torch.no_grad()
-    def _euler_step(self, z, t, t_next, labels, in_context_tokens):
-        v_pred, v_incontext_pred = self._forward_sample(z, t, labels, in_context_tokens)
+    def _euler_step(self, z, t, t_next, labels, z_registers):
+        v_pred, v_registers_pred = self._forward_sample(z, t, labels, z_registers)
         z_next = z + (t_next - t) * v_pred
-        z_incontext_next = in_context_tokens + (t_next.squeeze(1) - t.squeeze(1)) * v_incontext_pred
+        z_incontext_next = z_registers + (t_next.squeeze(1) - t.squeeze(1)) * v_registers_pred
         return z_next, z_incontext_next
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, labels, in_context_tokens):
-        v_pred_t, v_incontext_pred_t = self._forward_sample(z, t, labels, in_context_tokens)
+    def _heun_step(self, z, t, t_next, labels, z_registers):
+        v_pred_t, v_registers_pred_t = self._forward_sample(z, t, labels, z_registers)
 
         z_next_euler = z + (t_next - t) * v_pred_t
-        z_incontext_next_euler = in_context_tokens + (t_next.squeeze(1) - t.squeeze(1)) * v_incontext_pred_t
-        v_pred_t_next, v_incontext_pred_t_next = self._forward_sample(z_next_euler, t_next, labels, z_incontext_next_euler)
+        z_registers_next_euler = z_registers + (t_next.squeeze(1) - t.squeeze(1)) * v_registers_pred_t
+        v_pred_t_next, v_registers_pred_t_next = self._forward_sample(z_next_euler, t_next, labels, z_registers_next_euler)
 
         v_pred = 0.5 * (v_pred_t + v_pred_t_next)
-        v_incontext_pred = 0.5 * (v_incontext_pred_t + v_incontext_pred_t_next)
+        v_registers_pred = 0.5 * (v_registers_pred_t + v_registers_pred_t_next)
         z_next = z + (t_next - t) * v_pred
-        z_incontext_next = in_context_tokens + (t_next.squeeze(1) - t.squeeze(1)) * v_incontext_pred
+        z_registers_next = z_registers + (t_next.squeeze(1) - t.squeeze(1)) * v_registers_pred
 
-        return z_next, z_incontext_next
+        return z_next, z_registers_next
 
     @torch.no_grad()
     def update_ema(self):
