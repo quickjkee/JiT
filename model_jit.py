@@ -357,8 +357,8 @@ class JiT(nn.Module):
                 x = torch.cat([x_registers, x], dim=1) 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        x = x[:, self.in_context_len:]
         in_context_pred = x[:, :self.in_context_len]
+        x = x[:, self.in_context_len:]
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
