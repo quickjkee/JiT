@@ -220,7 +220,7 @@ def main(args):
         g["params"] = [p for p in g["params"] if id(p) not in register_param_ids]
     param_groups.append({
         "params": register_params,
-        "lr": args.lr * 10,
+        "lr": args.lr * 1000,
         "weight_decay": args.weight_decay
     })
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
