@@ -107,7 +107,7 @@ class Denoiser(nn.Module):
             x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
             x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
             x_registers = self.dinov2_vitb14.forward_features(x_dino)['x_norm_regtokens']
-            x_registers = x_registers.unsqueeze(1).repeat(1, self.in_context_len // 4, 1)
+            x_registers = x_registers.repeat(1, self.in_context_len // 4, 1)
         else:
             y_emb = self.net.y_embedder(labels)
             x_registers = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
