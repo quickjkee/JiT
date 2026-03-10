@@ -221,7 +221,7 @@ class JiT(nn.Module):
         bottleneck_dim=128,
         in_context_len=32,
         in_context_start=8,
-        register_tokens=None,
+        registers=None,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -247,7 +247,7 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            self.register_tokens = register_tokens
+            self.register_tokens = registers
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
