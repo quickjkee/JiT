@@ -53,7 +53,7 @@ class Denoiser(nn.Module):
 
         self.dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", trust_repo=True, force_reload=False)
         self.dinov2_vitb14.eval().requires_grad_(False)
-        registers = self.dinov2_vitb14.register_tokens.repeat(1, args.in_context_len // 4, 1).cuda()
+        registers = self.dinov2_vitb14.cls_token.repeat(1, args.in_context_len, 1).cuda()
 
         self.net = JiT_models[args.model](
                 input_size=args.img_size,
