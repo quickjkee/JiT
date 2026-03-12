@@ -328,13 +328,7 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def incontext_diffusion_noise(self, in_context_tokens, t):
-        e = torch.randn_like(in_context_tokens)
-        in_context_tokens_noised = t * in_context_tokens + (1 - t) * e
-        in_context_target = (in_context_tokens - in_context_tokens_noised) / (1 - t).clamp_min(5e-2)
-        return in_context_tokens_noised, in_context_target
-
-    def forward(self, x, t, y, x_registers):
+    def forward(self, x, t, y, drop_registers_layer=None):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -348,21 +342,24 @@ class JiT(nn.Module):
         # forward JiT
         x = self.x_embedder(x)
         x += self.pos_embed
-        t = t.view(-1, *([1] * (x.ndim - 1)))
 
         for i, block in enumerate(self.blocks):
-            # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                x_registers = x_registers + self.in_context_posemb
-                x = torch.cat([x_registers, x], dim=1) 
+                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                in_context_tokens += self.in_context_posemb
+                x = torch.cat([in_context_tokens, x], dim=1)
+            if i == drop_registers_layer:
+                registers_pred = x[:, :self.in_context_len]
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        in_context_pred = x[:, :self.in_context_len]
         x = x[:, self.in_context_len:]
-
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
-        return output, in_context_pred
+
+        if drop_registers_layer is not None:
+            return output, registers_pred
+        else:
+            return output
 
 
 def JiT_B_16(**kwargs):
