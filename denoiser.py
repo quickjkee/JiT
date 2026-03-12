@@ -35,22 +35,31 @@ def diffusion_loss(v, v_pred):
     loss = loss.mean(dim=(1, 2, 3)).mean()
     return loss
 
-
-def repa_loss(model_regs, dino_regs, temperature=0.1):
+def repa_loss(
+    model_regs,          # [B, 32, D]
+    dino_patches,        # [B, L, D]
+    temperature=0.1,
+):
     """
-    model_regs : [B, 32, D]
-    dino_regs  : [B, 4, D]
+    model_regs: projected model register tokens
+    dino_patches: DINO patch tokens
     """
+    # normalize for cosine attention / cosine matching
+    model_regs = F.normalize(model_regs, dim=-1)      # [B, R, D]
+    dino_patches = F.normalize(dino_patches, dim=-1)  # [B, L, D]
 
-    # normalize for cosine similarity
-    model_regs = F.normalize(model_regs, dim=-1)
-    dino_regs = F.normalize(dino_regs, dim=-1)
+    # each register attends over DINO patch tokens
+    # attn: [B, R, L]
+    sim = torch.matmul(model_regs, dino_patches.transpose(-1, -2))
+    attn = torch.softmax(sim / temperature, dim=-1)
 
-    # pairwise cosine similarity
-    sim = torch.matmul(model_regs, dino_regs.transpose(-1, -2)) / temperature
-    weights = torch.softmax(sim, dim=-1)   # [B, 32, 4]
-    aligned_sim = (weights * sim).sum(dim=-1)   # [B, 32]
-    loss = -aligned_sim.mean()
+    # attended target per register
+    # target_regs: [B, R, D]
+    target_regs = torch.matmul(attn, dino_patches)
+    target_regs = F.normalize(target_regs, dim=-1)
+
+    # alignment loss: each register should match its attended patch-summary
+    loss = -(model_regs * target_regs).sum(dim=-1).mean()
 
     return loss
 
@@ -66,7 +75,7 @@ class Denoiser(nn.Module):
             "facebookresearch/dinov2", "dinov2_vitg14_reg",
             trust_repo=True, force_reload=False
         )
-        dinov2_vitg14.eval().requires_grad_(False)
+        dinov2_vitg14.eval().requires_grad_(False).cuda()
         object.__setattr__(self, "_dinov2_vitg14", dinov2_vitg14)
 
         self.net = JiT_models[args.model](
@@ -120,7 +129,8 @@ class Denoiser(nn.Module):
             )
             x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
             x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
-            x_registers = self._dinov2_vitg14.forward_features(x_dino)['x_norm_regtokens']
+            with torch.autocast(device_type="cuda", enabled=False):
+                x_registers = self._dinov2_vitg14.forward_features(x_dino.float())['x_norm_patchtokens']
 
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
