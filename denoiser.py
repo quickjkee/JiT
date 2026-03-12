@@ -36,12 +36,23 @@ def diffusion_loss(v, v_pred):
     return loss
 
 
-def repa_loss(dino_feats, x_mid, t=None):
-    dino_feats = F.normalize(dino_feats, dim=-1) # [B,T,D]
-    x_mid = F.normalize(x_mid, dim=-1) # [B,T,D]
-    cos_sim = (dino_feats * x_mid).sum(dim=-1)    # [B,T]
-    loss_repa = -cos_sim.mean(dim=(1)).mean()
-    return loss_repa
+def repa_loss(model_regs, dino_regs, temperature=0.1):
+    """
+    model_regs : [B, 32, D]
+    dino_regs  : [B, 4, D]
+    """
+
+    # normalize for cosine similarity
+    model_regs = F.normalize(model_regs, dim=-1)
+    dino_regs = F.normalize(dino_regs, dim=-1)
+
+    # pairwise cosine similarity
+    sim = torch.matmul(model_regs, dino_regs.transpose(-1, -2)) / temperature
+    weights = torch.softmax(sim, dim=-1)   # [B, 32, 4]
+    aligned_sim = (weights * sim).sum(dim=-1)   # [B, 32]
+    loss = -aligned_sim.mean()
+
+    return loss
 
 
 class Denoiser(nn.Module):
@@ -51,8 +62,12 @@ class Denoiser(nn.Module):
     ):
         super().__init__()
 
-        self.dinov2_vitg14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitg14_reg", trust_repo=True, force_reload=False)
-        self.dinov2_vitg14.eval().requires_grad_(False)
+        dinov2_vitg14 = torch.hub.load(
+            "facebookresearch/dinov2", "dinov2_vitg14_reg",
+            trust_repo=True, force_reload=False
+        )
+        dinov2_vitg14.eval().requires_grad_(False)
+        object.__setattr__(self, "_dinov2_vitg14", dinov2_vitg14)
 
         self.net = JiT_models[args.model](
                 input_size=args.img_size,
@@ -62,6 +77,7 @@ class Denoiser(nn.Module):
                 proj_drop=args.proj_dropout,
                 in_context_len=args.in_context_len,
                 in_context_start=args.in_context_start,
+                dino_embed_dim=dinov2_vitg14.embed_dim
             )
         print_trainable(self.net)
 
@@ -98,13 +114,13 @@ class Denoiser(nn.Module):
         return torch.sigmoid(z)
 
     def forward(self, x, labels):
-        if True:
+        with torch.inference_mode():
             x_dino = F.interpolate(
                 x, size=(224, 224), mode="bicubic", align_corners=False
             )
             x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
             x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
-            x_registers = self.dinov2_vitg14.forward_features(x_dino)['x_norm_regtokens']
+            x_registers = self._dinov2_vitg14.forward_features(x_dino)['x_norm_regtokens']
 
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
@@ -117,7 +133,7 @@ class Denoiser(nn.Module):
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
         loss_repa = repa_loss(x_registers, registers_pred)
-        loss = loss + 0.5 * loss_repa
+        loss = loss + 0.1 * loss_repa
 
         return loss
 
