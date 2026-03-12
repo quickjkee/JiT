@@ -57,7 +57,7 @@ class Denoiser(nn.Module):
         super().__init__()
 
         dinov2_vitg14 = torch.hub.load(
-            "facebookresearch/dinov2", "dinov2_vitg14_reg",
+            "facebookresearch/dinov2", "dinov2_vitb14_reg",
             trust_repo=True, force_reload=False
         )
         dinov2_vitg14.eval().requires_grad_(False).cuda()
