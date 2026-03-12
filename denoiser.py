@@ -36,17 +36,12 @@ def diffusion_loss(v, v_pred):
     return loss
 
 
-def repa_loss(model_regs, dino_regs, temperature=0.1):
+def repa_loss(model_regs, dino_patches):
     model_regs = F.normalize(model_regs, dim=-1)
-    dino_regs = F.normalize(dino_regs, dim=-1)
-
-    sim = torch.matmul(model_regs, dino_regs.transpose(-1, -2))   # [B, 32, L]
-
-    weights = torch.softmax(sim / temperature, dim=-1)            # use temp here only
-    aligned_sim = (weights * sim).sum(dim=-1)                     # unscaled sim here
-
-    loss = -aligned_sim.mean()
-    return loss
+    dino_patches = F.normalize(dino_patches, dim=-1)
+    sim = torch.matmul(model_regs, dino_patches.transpose(-1, -2)) 
+    best_sim = sim.max(dim=-1).values
+    return -best_sim.mean()
 
 
 class Denoiser(nn.Module):
