@@ -35,32 +35,17 @@ def diffusion_loss(v, v_pred):
     loss = loss.mean(dim=(1, 2, 3)).mean()
     return loss
 
-def repa_loss(
-    model_regs,          # [B, 32, D]
-    dino_patches,        # [B, L, D]
-    temperature=0.1,
-):
-    """
-    model_regs: projected model register tokens
-    dino_patches: DINO patch tokens
-    """
-    # normalize for cosine attention / cosine matching
-    model_regs = F.normalize(model_regs, dim=-1)      # [B, R, D]
-    dino_patches = F.normalize(dino_patches, dim=-1)  # [B, L, D]
 
-    # each register attends over DINO patch tokens
-    # attn: [B, R, L]
-    sim = torch.matmul(model_regs, dino_patches.transpose(-1, -2))
-    attn = torch.softmax(sim / temperature, dim=-1)
+def repa_loss(model_regs, dino_regs, temperature=0.1):
+    model_regs = F.normalize(model_regs, dim=-1)
+    dino_regs = F.normalize(dino_regs, dim=-1)
 
-    # attended target per register
-    # target_regs: [B, R, D]
-    target_regs = torch.matmul(attn, dino_patches)
-    target_regs = F.normalize(target_regs, dim=-1)
+    sim = torch.matmul(model_regs, dino_regs.transpose(-1, -2))   # [B, 32, L]
 
-    # alignment loss: each register should match its attended patch-summary
-    loss = -(model_regs * target_regs).sum(dim=-1).mean()
+    weights = torch.softmax(sim / temperature, dim=-1)            # use temp here only
+    aligned_sim = (weights * sim).sum(dim=-1)                     # unscaled sim here
 
+    loss = -aligned_sim.mean()
     return loss
 
 
