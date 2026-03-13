@@ -371,7 +371,7 @@ class JiT(nn.Module):
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
             if drop_registers_layer is not None and i == drop_registers_layer:
-                registers_pred = x[:, :self.in_context_len]             
+                registers_pred = x[:, self.in_context_len:]             
                 registers_pred = self.register_projector(registers_pred)
 
         x = x[:, self.in_context_len:]
