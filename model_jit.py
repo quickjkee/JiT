@@ -382,7 +382,7 @@ class JiT(nn.Module):
 
             if drop_registers_layer is not None and i == drop_registers_layer:
                 registers_pred = x[:, :self.in_context_len]    
-                registers_pred = select_low_norm_registers(registers_pred, k=20)     
+                #registers_pred = select_low_norm_registers(registers_pred, k=32)     
                 registers_pred = self.register_projector(registers_pred)
 
         x = x[:, self.in_context_len:]
