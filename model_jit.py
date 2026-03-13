@@ -23,6 +23,16 @@ def build_mlp(hidden_size, projector_dim, z_dim):
                 nn.Linear(projector_dim, z_dim),
             )
 
+def select_low_norm_registers(regs, k):
+    """
+    regs: [B, 32, H]
+    returns: [B, k, H]
+    """
+    norms = regs.norm(dim=-1)  # [B, 32]
+    idx = norms.topk(k=k, dim=-1, largest=False).indices
+    gather_idx = idx.unsqueeze(-1).expand(-1, -1, regs.size(-1))
+    return torch.gather(regs, dim=1, index=gather_idx)
+
 
 class BottleneckPatchEmbed(nn.Module):
     """ Image to Patch Embedding
@@ -371,7 +381,8 @@ class JiT(nn.Module):
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
             if drop_registers_layer is not None and i == drop_registers_layer:
-                registers_pred = x[:, self.in_context_len:]             
+                registers_pred = x[:, :self.in_context_len]    
+                registers_pred = select_low_norm_registers(registers_pred, k=20)     
                 registers_pred = self.register_projector(registers_pred)
 
         x = x[:, self.in_context_len:]
