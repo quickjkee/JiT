@@ -36,25 +36,26 @@ def diffusion_loss(v, v_pred):
     return loss
 
 
-def repa_loss(model_regs, dino_patches, topk=16, lambda_div=0.01):
+def repa_loss(all_student_regs, teacher_regs):
     """
-    model_regs:   [B, R, D]
-    dino_patches: [B, L, D]
+    all_student_regs: [B, 32, D]
+    teacher_regs:     [B, 5, D]   # CLS + 4 DINO regs
     """
-    model_regs = F.normalize(model_regs, dim=-1)
-    dino_patches = F.normalize(dino_patches, dim=-1)
 
-    sim = torch.matmul(model_regs, dino_patches.transpose(-1, -2))   # [B, R, L]
+    all_student_regs = F.normalize(all_student_regs, dim=-1)
+    teacher_regs = F.normalize(teacher_regs, dim=-1)
 
-    topk_sim = sim.topk(k=topk, dim=-1).values                        # [B, R, K]
-    loss_align = -topk_sim.mean()
+    # [B, 32, 5]
+    sim = torch.matmul(all_student_regs, teacher_regs.transpose(-1, -2))
 
-    reg_sim = torch.matmul(model_regs, model_regs.transpose(-1, -2))  # [B, R, R]
-    R = model_regs.size(1)
-    eye = torch.eye(R, device=model_regs.device, dtype=model_regs.dtype).unsqueeze(0)
-    loss_div = ((reg_sim * (1.0 - eye)) ** 2).mean()
+    # for each teacher token, choose best student register
+    # idx: [B, 5]
+    idx = sim.argmax(dim=1)
 
-    loss = loss_align + lambda_div * loss_div
+    gather_idx = idx.unsqueeze(-1).expand(-1, -1, all_student_regs.size(-1))
+    matched_student = torch.gather(all_student_regs, dim=1, index=gather_idx)  # [B, 5, D]
+
+    loss = -(matched_student * teacher_regs).sum(dim=-1).mean()
     return loss
 
 
@@ -124,7 +125,9 @@ class Denoiser(nn.Module):
             x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
             x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
             with torch.autocast(device_type="cuda", enabled=False):
-                x_registers = self._dinov2_vitg14.forward_features(x_dino.float())['x_norm_patchtokens']
+                x_dino = self._dinov2_vitg14.forward_features(x_dino.float())['x_norm_regtokens']
+                x_registers, x_cls = x_dino['x_norm_regtokens'], x_dino['x_norm_clstoken'].unsqueeze(1)
+                x_registers = torch.cat([x_cls, x_registers], dim=1)
 
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
