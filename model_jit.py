@@ -283,9 +283,15 @@ class JiT(nn.Module):
         ])
 
         # registers layers
-        mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp_registers = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
-        self.rmsnorms_registers = RMSNorm(hidden_size, eps=1e-6)
+        self.mlp_registers = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size * mlp_ratio),
+            nn.GELU(),
+            nn.Linear(hidden_size * mlp_ratio, hidden_size),
+        )
+        self.layernorm_registers = nn.LayerNorm(hidden_size, elementwise_affine=True)
+        nn.init.zeros_(self.layernorm_registers.weight)
+        nn.init.zeros_(self.layernorm_registers.bias)
+
 
         # linear predict
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
@@ -364,7 +370,7 @@ class JiT(nn.Module):
                 registers = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 registers += self.in_context_posemb
                 if prev_registers is not None:
-                    registers = registers + self.rmsnorms_registers(prev_registers + self.mlp_registers(prev_registers))
+                    registers = registers + self.layernorm_registers(prev_registers + self.mlp_registers(prev_registers))
                 x = torch.cat([registers, x], dim=1)
 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
