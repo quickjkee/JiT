@@ -1,6 +1,7 @@
 from ast import arg
 import torch
 import torch.nn as nn
+import random
 import torch.nn.functional as F
 from model_jit import JiT_models
 from torchvision.transforms import Normalize
@@ -36,26 +37,12 @@ def diffusion_loss(v, v_pred):
     return loss
 
 
-def repa_loss(student_regs, teacher_regs):
-    student_regs = F.normalize(student_regs, dim=-1)
-    teacher_regs = F.normalize(teacher_regs, dim=-1)
-    return -(student_regs * teacher_regs).sum(dim=-1).mean()
-
-
 class Denoiser(nn.Module):
     def __init__(
         self,
         args
     ):
         super().__init__()
-
-        dinov2_vitg14 = torch.hub.load(
-            "facebookresearch/dinov2", "dinov2_vitb14_reg",
-            trust_repo=True, force_reload=False
-        )
-        dinov2_vitg14.eval().requires_grad_(False).cuda()
-        object.__setattr__(self, "_dinov2_vitg14", dinov2_vitg14)
-
         self.net = JiT_models[args.model](
                 input_size=args.img_size,
                 in_channels=3,
@@ -64,7 +51,6 @@ class Denoiser(nn.Module):
                 proj_drop=args.proj_dropout,
                 in_context_len=args.in_context_len,
                 in_context_start=args.in_context_start,
-                dino_embed_dim=dinov2_vitg14.embed_dim
             )
         print_trainable(self.net)
 
@@ -101,17 +87,6 @@ class Denoiser(nn.Module):
         return torch.sigmoid(z)
 
     def forward(self, x, labels):
-        with torch.inference_mode():
-            x_dino = F.interpolate(
-                x, size=(224, 224), mode="bicubic", align_corners=False
-            )
-            x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
-            x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
-            with torch.autocast(device_type="cuda", enabled=False):
-                x_dino = self._dinov2_vitg14.forward_features(x_dino.float())
-                x_registers, x_cls = x_dino['x_norm_regtokens'], x_dino['x_norm_clstoken'].unsqueeze(1)
-                x_registers = torch.cat([x_cls, x_registers], dim=1)
-
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
@@ -119,11 +94,14 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred, registers_pred = self.net(z, t.flatten(), labels_dropped, drop_registers_layer=7)
+        registers = None
+        if random.uniform(0, 1) < 0.9:
+            with torch.no_grad():
+                _, registers = self.net(z, t.flatten(), labels_dropped, prev_registers=registers)
+
+        x_pred, _ = self.net(z, t.flatten(), labels_dropped, prev_registers=registers)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
-        loss_repa = repa_loss(x_registers, registers_pred)
-        loss = loss + 0.05 * loss_repa
 
         return loss
 
@@ -133,6 +111,7 @@ class Denoiser(nn.Module):
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
         timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
+        registers = None
 
         if self.method == "euler":
             stepper = self._euler_step
@@ -145,20 +124,20 @@ class Denoiser(nn.Module):
         for i in range(self.steps - 1):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            z = stepper(z, t, t_next, labels)
+            z, registers = stepper(z, t, t_next, labels, registers)
 
         # last step euler
-        z = self._euler_step(z, timesteps[-2], timesteps[-1], labels)
+        z, _ = self._euler_step(z, timesteps[-2], timesteps[-1], labels, registers)
         return z
 
     @torch.no_grad()
-    def _forward_sample(self, z, t, labels):
+    def _forward_sample(self, z, t, labels, registers):
         # conditional
-        x_cond = self.net(z, t.flatten(), labels)
+        x_cond, registers = self.net(z, t.flatten(), labels, registers)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes))
+        x_uncond, _ = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), None)
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
@@ -166,24 +145,24 @@ class Denoiser(nn.Module):
         interval_mask = (t < high) & ((low == 0) | (t > low))
         cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)
 
-        return v_uncond + cfg_scale_interval * (v_cond - v_uncond)
+        return v_uncond + cfg_scale_interval * (v_cond - v_uncond), registers
 
     @torch.no_grad()
-    def _euler_step(self, z, t, t_next, labels):
-        v_pred = self._forward_sample(z, t, labels)
+    def _euler_step(self, z, t, t_next, labels, registers):
+        v_pred, registers = self._forward_sample(z, t, labels, registers)
         z_next = z + (t_next - t) * v_pred
-        return z_next
+        return z_next, registers
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, labels):
-        v_pred_t = self._forward_sample(z, t, labels)
+    def _heun_step(self, z, t, t_next, labels, registers):
+        v_pred_t, registers = self._forward_sample(z, t, labels, registers)
 
         z_next_euler = z + (t_next - t) * v_pred_t
-        v_pred_t_next = self._forward_sample(z_next_euler, t_next, labels)
+        v_pred_t_next, _ = self._forward_sample(z_next_euler, t_next, labels, registers)
 
         v_pred = 0.5 * (v_pred_t + v_pred_t_next)
         z_next = z + (t_next - t) * v_pred
-        return z_next
+        return z_next, registers
 
     @torch.no_grad()
     def update_ema(self):

@@ -14,15 +14,6 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
-def build_mlp(hidden_size, projector_dim, z_dim):
-    return nn.Sequential(
-                nn.Linear(hidden_size, projector_dim),
-                nn.SiLU(),
-                nn.Linear(projector_dim, projector_dim),
-                nn.SiLU(),
-                nn.Linear(projector_dim, z_dim),
-            )
-
 def select_low_norm_registers(regs, k):
     """
     regs: [B, 32, H]
@@ -241,7 +232,6 @@ class JiT(nn.Module):
         bottleneck_dim=128,
         in_context_len=32,
         in_context_start=8,
-        dino_embed_dim=768
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -284,13 +274,6 @@ class JiT(nn.Module):
             num_cls_token=self.in_context_len
         )
 
-        # repa projector
-        self.register_projector = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size),
-            nn.SiLU(),
-            nn.Linear(self.hidden_size, dino_embed_dim),
-        )
-
         # transformer
         self.blocks = nn.ModuleList([
             JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
@@ -298,6 +281,11 @@ class JiT(nn.Module):
                      proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
             for i in range(depth)
         ])
+
+        # registers layers
+        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        self.mlp_registers = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        self.rmsnorms_registers = RMSNorm(hidden_size, eps=1e-6)
 
         # linear predict
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
@@ -356,7 +344,7 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y, drop_registers_layer=None):
+    def forward(self, x, t, y, prev_registers=None):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -369,30 +357,25 @@ class JiT(nn.Module):
 
         # forward JiT
         x = self.x_embedder(x)
-        N, T, D = x.shape
         x += self.pos_embed
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
-                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens += self.in_context_posemb
-                x = torch.cat([in_context_tokens, x], dim=1)
+                registers = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                registers += self.in_context_posemb
+                if prev_registers is not None:
+                    prev_registers = prev_registers + self.mlp_registers(prev_registers)
+                    registers = registers + self.rmsnorms_registers(prev_registers)
+                x = torch.cat([registers, x], dim=1)
 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-            if drop_registers_layer is not None and i == drop_registers_layer:
-                registers_pred = x[:, :self.in_context_len]    
-                registers_pred = select_low_norm_registers(registers_pred, k=5)     
-                registers_pred = self.register_projector(registers_pred)
-
+        registers = x[:, :self.in_context_len]
         x = x[:, self.in_context_len:]
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        if drop_registers_layer is not None:
-            return output, registers_pred
-        else:
-            return output
+        return output, registers
 
 
 def JiT_B_16(**kwargs):
