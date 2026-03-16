@@ -364,8 +364,7 @@ class JiT(nn.Module):
                 registers = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 registers += self.in_context_posemb
                 if prev_registers is not None:
-                    prev_registers = prev_registers + self.mlp_registers(prev_registers)
-                    registers = registers + self.rmsnorms_registers(prev_registers)
+                    registers = registers + self.rmsnorms_registers(prev_registers + self.mlp_registers(prev_registers))
                 x = torch.cat([registers, x], dim=1)
 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)

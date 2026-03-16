@@ -133,11 +133,11 @@ class Denoiser(nn.Module):
     @torch.no_grad()
     def _forward_sample(self, z, t, labels, registers):
         # conditional
-        x_cond, registers = self.net(z, t.flatten(), labels, registers)
+        x_cond, registers_cond = self.net(z, t.flatten(), labels, registers)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond, _ = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), None)
+        x_uncond, _ = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), registers)
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
@@ -145,7 +145,7 @@ class Denoiser(nn.Module):
         interval_mask = (t < high) & ((low == 0) | (t > low))
         cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)
 
-        return v_uncond + cfg_scale_interval * (v_cond - v_uncond), registers
+        return v_uncond + cfg_scale_interval * (v_cond - v_uncond), registers_cond
 
     @torch.no_grad()
     def _euler_step(self, z, t, t_next, labels, registers):
