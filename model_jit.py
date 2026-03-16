@@ -284,9 +284,9 @@ class JiT(nn.Module):
 
         # registers layers
         self.mlp_registers = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size * mlp_ratio),
+            nn.Linear(hidden_size, int(hidden_size * mlp_ratio)),
             nn.GELU(),
-            nn.Linear(hidden_size * mlp_ratio, hidden_size),
+            nn.Linear(int(hidden_size * mlp_ratio), hidden_size)
         )
         self.layernorm_registers = nn.LayerNorm(hidden_size, elementwise_affine=True)
         nn.init.zeros_(self.layernorm_registers.weight)
