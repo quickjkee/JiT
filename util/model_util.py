@@ -152,7 +152,7 @@ class RMSNorm(nn.Module):
 
 
 class RMSNormSplit(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6, elementwise_affine=True):
+    def __init__(self, hidden_size, eps=1e-6, elementwise_affine=True, split_point=32):
         super().__init__()
         self.variance_epsilon = eps
         # RMSNorm weight
@@ -163,10 +163,11 @@ class RMSNormSplit(nn.Module):
             eps=eps,
             elementwise_affine=elementwise_affine
         )
+        self.split_point = split_point
 
-    def forward(self, hidden_states, split_point):
-        hidden_states_1 = hidden_states[:, split_point:, :]   
-        hidden_states_2 = hidden_states[:, :split_point, :]   
+    def forward(self, hidden_states):
+        hidden_states_1 = hidden_states[:, self.split_point:, :]   
+        hidden_states_2 = hidden_states[:, :self.split_point, :]   
 
         # ---- RMSNorm branch ----
         input_dtype_1 = hidden_states_1.dtype
