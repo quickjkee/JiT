@@ -145,8 +145,8 @@ class DualAttention(nn.Module):
 
         self.q_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
         self.q_norm_context = RMSNorm(head_dim) if qk_norm else nn.Identity()
-        self.k_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
-        self.k_norm_context = RMSNorm(head_dim) if qk_norm else nn.Identity()
+        self.k_norm = nn.LayerNorm(head_dim, elementwise_affine=True) if qk_norm else nn.Identity()
+        self.k_norm_context = nn.LayerNorm(head_dim, elementwise_affine=True) if qk_norm else nn.Identity()
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -253,24 +253,23 @@ class DualJiTBlock(nn.Module):
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0):
         super().__init__()
         self.norm1 = RMSNorm(hidden_size, eps=1e-6)
-        self.norm1_context = RMSNorm(hidden_size, eps=1e-6)
+        self.norm1_context = nn.LayerNorm(hidden_size, elementwise_affine=True)
 
         self.attn = DualAttention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
                               attn_drop=attn_drop, proj_drop=proj_drop)
 
         self.norm2 = RMSNorm(hidden_size, eps=1e-6)
-        self.norm2_context = RMSNorm(hidden_size, eps=1e-6)
+        self.norm2_context = nn.LayerNorm(hidden_size, elementwise_affine=True)
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
-        self.mlp_context = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
-
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        self.mlp_context = nn.Sequential(
+            nn.Linear(hidden_size, int(hidden_size * mlp_ratio)),
+            nn.GELU(),
+            nn.Linear(int(hidden_size * mlp_ratio), hidden_size)
         )
 
-        self.adaLN_modulation_context = nn.Sequential(
+        self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
@@ -278,23 +277,20 @@ class DualJiTBlock(nn.Module):
     @torch.compile
     def forward(self, x,  c, feat_rope=None, in_context_len=0):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        shift_msa_context, scale_msa_context, gate_msa_context, shift_mlp_context, scale_mlp_context, gate_mlp_context = self.adaLN_modulation_context(c).chunk(6, dim=-1)
 
         x_patch = x[:, in_context_len:, :]  
         x_registers = x[:, :in_context_len, :]  
 
         # Part 1. Attention branch
         x_patch_1 = modulate(self.norm1(x_patch), shift_msa, scale_msa)
-        x_registers_1 = modulate(self.norm1_context(x_registers), shift_msa_context, scale_msa_context)
-        x_patch_1, x_registers_1 = self.attn(x_registers_1, x_patch_1, rope=feat_rope)
+        x_registers = self.norm1_context(x_registers)
+        x_patch_1, x_registers = self.attn(x_registers, x_patch_1, rope=feat_rope)
         x_patch = x_patch + gate_msa.unsqueeze(1) * x_patch_1
-        x_registers = x_registers + gate_msa_context.unsqueeze(1) * x_registers_1
 
         # Part 2. MLP branch
         x_patch = x_patch + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x_patch), shift_mlp, scale_mlp))
-        x_registers = x_registers + gate_mlp_context.unsqueeze(1) * self.mlp_context(modulate(self.norm2_context(x_registers), 
-                                                                                              shift_mlp_context, scale_mlp_context)
-                                                                                    )
+        x_registers = x_registers + self.mlp_context(self.norm2_context(x_registers))
+
         # Part 3. Concat
         x = torch.cat([x_registers, x_patch], dim=1)
         return x
