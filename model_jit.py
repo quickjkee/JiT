@@ -246,8 +246,6 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            torch.nn.init.normal_(self.register_tokens, std=.02)
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
@@ -350,13 +348,13 @@ class JiT(nn.Module):
             if self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
-                register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                x = torch.cat([register_tokens, in_context_tokens, x], dim=1)
-                
+                x = torch.cat([in_context_tokens, x], dim=1)
+            if i >= self.in_context_start:
+                in_context_tokens = x[:, :self.in_context_len]
+                c = c + in_context_tokens
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        x = x[:, self.in_context_len + self.in_context_len:]
-
+        x = x[:, self.in_context_len:]
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
