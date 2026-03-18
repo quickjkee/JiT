@@ -145,19 +145,16 @@ class Attention(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        q = rope(q)
-        k = rope(k)
+        q = rope(self.q_norm(q))
+        k = rope(self.k_norm(k))
 
         x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
-
         x = x.transpose(1, 2).reshape(B, N, C)
 
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
+
 
 class SwiGLUFFN(nn.Module):
     def __init__(
