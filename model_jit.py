@@ -191,28 +191,42 @@ class SplitSwiGLUFFN(nn.Module):
 
         self.split_point = split_point
 
-        # shared
+        # shared projection (value + gate together)
         self.w12 = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+
+        # separate gate transforms (lightweight)
+        self.gate_main = nn.Linear(hidden_dim, hidden_dim, bias=bias)
+        self.gate_reg = nn.Linear(hidden_dim, hidden_dim, bias=bias) if split_point > 0 else None
+
         self.ffn_dropout = nn.Dropout(drop)
 
-        # split output projection
         self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
         self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias) if split_point > 0 else None
 
     def forward(self, x):
         x12 = self.w12(x)
-        x1, x2 = x12.chunk(2, dim=-1)
-        hidden = F.silu(x1) * x2
-        hidden = self.ffn_dropout(hidden)
+        x1, x2 = x12.chunk(2, dim=-1)  # x1=value, x2=pre-gate
 
         if self.split_point > 0:
-            h_reg = hidden[:, :self.split_point]
-            h_main = hidden[:, self.split_point:]
+            v_reg = x1[:, :self.split_point]
+            v_main = x1[:, self.split_point:]
+
+            g_reg = self.gate_reg(x2[:, :self.split_point])
+            g_main = self.gate_main(x2[:, self.split_point:])
+
+            h_reg = F.silu(g_reg) * v_reg
+            h_main = F.silu(g_main) * v_main
+
+            h_reg = self.ffn_dropout(h_reg)
+            h_main = self.ffn_dropout(h_main)
 
             y_reg = self.w3_reg(h_reg)
             y_main = self.w3_main(h_main)
             return torch.cat([y_reg, y_main], dim=1)
 
+        g = self.gate_main(x2)
+        hidden = F.silu(g) * x1
+        hidden = self.ffn_dropout(hidden)
         return self.w3_main(hidden)
 
 
