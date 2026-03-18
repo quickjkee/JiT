@@ -177,6 +177,45 @@ class SwiGLUFFN(nn.Module):
         return self.w3(self.ffn_dropout(hidden))
 
 
+class SplitSwiGLUFFN(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        drop: float = 0.0,
+        bias: bool = True,
+        split_point: int = 0,
+    ) -> None:
+        super().__init__()
+        hidden_dim = int(hidden_dim * 2 / 3)
+
+        self.split_point = split_point
+
+        # shared
+        self.w12 = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+        self.ffn_dropout = nn.Dropout(drop)
+
+        # split output projection
+        self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
+        self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias) if split_point > 0 else None
+
+    def forward(self, x):
+        x12 = self.w12(x)
+        x1, x2 = x12.chunk(2, dim=-1)
+        hidden = F.silu(x1) * x2
+        hidden = self.ffn_dropout(hidden)
+
+        if self.split_point > 0:
+            h_reg = hidden[:, :self.split_point]
+            h_main = hidden[:, self.split_point:]
+
+            y_reg = self.w3_reg(h_reg)
+            y_main = self.w3_main(h_main)
+            return torch.cat([y_reg, y_main], dim=1)
+
+        return self.w3_main(hidden)
+
+
 class FinalLayer(nn.Module):
     """
     The final layer of JiT.
@@ -208,7 +247,8 @@ class JiTBlock(nn.Module):
                               attn_drop=attn_drop, proj_drop=proj_drop)
         self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
+            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
