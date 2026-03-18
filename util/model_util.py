@@ -154,15 +154,10 @@ class RMSNorm(nn.Module):
 class RMSNormSplit(nn.Module):
     def __init__(self, hidden_size, eps=1e-6, elementwise_affine=True, split_point=32):
         super().__init__()
-        self.variance_epsilon = eps
-        # RMSNorm weight
-        self.rms_weight = nn.Parameter(torch.ones(hidden_size))
-        # LayerNorm for hidden_states_2
-        self.layer_norm = nn.LayerNorm(
-            hidden_size,
-            eps=eps,
-            elementwise_affine=elementwise_affine
-        )
+        self.variance_epsilon_1 = eps
+        self.rms_weight_1 = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon_2 = eps
+        self.rms_weight_2 = nn.Parameter(torch.ones(hidden_size))
         self.split_point = split_point
 
     def forward(self, hidden_states):
@@ -173,11 +168,15 @@ class RMSNormSplit(nn.Module):
         input_dtype_1 = hidden_states_1.dtype
         x1 = hidden_states_1.to(torch.float32)
         variance = x1.pow(2).mean(-1, keepdim=True)
-        x1 = x1 * torch.rsqrt(variance + self.variance_epsilon)
-        x1 = (self.rms_weight * x1).to(input_dtype_1)
+        x1 = x1 * torch.rsqrt(variance + self.variance_epsilon_1)
+        x1 = (self.rms_weight_1 * x1).to(input_dtype_1)
 
         # ---- LayerNorm branch ----
-        x2 = self.layer_norm(hidden_states_2)
+        input_dtype_2 = hidden_states_2.dtype
+        x2 = hidden_states_2.to(torch.float32)
+        variance = x2.pow(2).mean(-1, keepdim=True)
+        x2 = x2 * torch.rsqrt(variance + self.variance_epsilon_2)
+        x2 = (self.rms_weight_2 * x2).to(input_dtype_2)
 
         hidden_states = torch.cat([x2, x1], dim=1)
         return hidden_states
