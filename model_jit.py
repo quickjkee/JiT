@@ -14,17 +14,6 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
-def select_low_norm_registers(regs, k):
-    """
-    regs: [B, 32, H]
-    returns: [B, k, H]
-    """
-    norms = regs.norm(dim=-1)  # [B, 32]
-    idx = norms.topk(k=k, dim=-1, largest=False).indices
-    gather_idx = idx.unsqueeze(-1).expand(-1, -1, regs.size(-1))
-    return torch.gather(regs, dim=1, index=gather_idx)
-
-
 class BottleneckPatchEmbed(nn.Module):
     """ Image to Patch Embedding
     """
@@ -231,7 +220,7 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8,
+        in_context_start=8
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -257,6 +246,8 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
+            self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            torch.nn.init.normal_(self.register_tokens, std=.02)
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
@@ -271,7 +262,7 @@ class JiT(nn.Module):
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=self.in_context_len
+            num_cls_token=self.in_context_len + self.in_context_len
         )
 
         # transformer
@@ -281,17 +272,6 @@ class JiT(nn.Module):
                      proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
             for i in range(depth)
         ])
-
-        # registers layers
-        self.mlp_registers = nn.Sequential(
-            nn.Linear(hidden_size, int(hidden_size * mlp_ratio)),
-            nn.GELU(),
-            nn.Linear(int(hidden_size * mlp_ratio), hidden_size)
-        )
-        self.layernorm_registers = nn.LayerNorm(hidden_size, elementwise_affine=True)
-        nn.init.zeros_(self.layernorm_registers.weight)
-        nn.init.zeros_(self.layernorm_registers.bias)
-
 
         # linear predict
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
@@ -350,7 +330,7 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y, prev_registers=None):
+    def forward(self, x, t, y):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -366,21 +346,21 @@ class JiT(nn.Module):
         x += self.pos_embed
 
         for i, block in enumerate(self.blocks):
+            # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                registers = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                registers += self.in_context_posemb
-                if prev_registers is not None:
-                    registers = registers + self.layernorm_registers(prev_registers + self.mlp_registers(prev_registers))
-                x = torch.cat([registers, x], dim=1)
-
+                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                in_context_tokens += self.in_context_posemb
+                register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
+                x = torch.cat([register_tokens, in_context_tokens, x], dim=1)
+                
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        registers = x[:, :self.in_context_len]
-        x = x[:, self.in_context_len:]
+        x = x[:, self.in_context_len + self.in_context_len:]
+
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        return output, registers
+        return output
 
 
 def JiT_B_16(**kwargs):
