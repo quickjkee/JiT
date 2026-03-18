@@ -10,8 +10,30 @@ import torch.nn.functional as F
 from util.model_util import VisionRotaryEmbeddingFast, get_2d_sincos_pos_embed, RMSNorm, RMSNormSplit
 
 
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+def split_mod(mod):
+    return mod.chunk(6, dim=-1)  # shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp
+
+def apply_mod(x, shift, scale, shift_reg=None, scale_reg=None, split_point=0):
+    if split_point <= 0:
+        return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+    x_reg = x[:, :split_point]
+    x_main = x[:, split_point:]
+
+    x_reg = x_reg * (1 + scale_reg.unsqueeze(1)) + shift_reg.unsqueeze(1)
+    x_main = x_main * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    return torch.cat([x_reg, x_main], dim=1)
+
+def apply_gate(x, gate, gate_reg=None, split_point=0):
+    if split_point <= 0:
+        return gate.unsqueeze(1) * x
+
+    x_reg = x[:, :split_point]
+    x_main = x[:, split_point:]
+
+    x_reg = gate_reg.unsqueeze(1) * x_reg
+    x_main = gate.unsqueeze(1) * x_main
+    return torch.cat([x_reg, x_main], dim=1)
 
 
 class BottleneckPatchEmbed(nn.Module):
@@ -174,7 +196,7 @@ class FinalLayer(nn.Module):
     @torch.compile
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
-        x = modulate(self.norm_final(x), shift, scale)
+        x = self.norm_final(x) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
         x = self.linear(x)
         return x
 
@@ -182,6 +204,8 @@ class FinalLayer(nn.Module):
 class JiTBlock(nn.Module):
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0, split_point=0):
         super().__init__()
+
+        self.split_point = split_point
         self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
                               attn_drop=attn_drop, proj_drop=proj_drop)
@@ -192,12 +216,45 @@ class JiTBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
+        
+        if split_point > 0:
+            self.adaLN_scale = nn.Parameter(torch.ones(1, 6 * hidden_size))
+            self.adaLN_delta = nn.Parameter(torch.zeros(1, 6 * hidden_size))
 
     @torch.compile
     def forward(self, x,  c, feat_rope=None):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope)
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        mod = self.adaLN_modulation(c)
+        reg_mod = mod * self.adaLN_scale + self.adaLN_delta if self.split_point > 0 else None
+
+        # Modulation splitting
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
+        if reg_mod is not None:
+            shift_msa_r, scale_msa_r, gate_msa_r, shift_mlp_r, scale_mlp_r, gate_mlp_r = split_mod(reg_mod)
+        else:
+            shift_msa_r = scale_msa_r = gate_msa_r = shift_mlp_r = scale_mlp_r = gate_mlp_r = None
+        
+        # Attn branch
+        h = apply_mod(
+            self.norm1(x),
+            shift_msa, scale_msa,
+            shift_msa_r, scale_msa_r,
+            self.split_point
+        )
+        h = self.attn(h, rope=feat_rope)
+        h = apply_gate(h, gate_msa, gate_msa_r, self.split_point)
+        x = x + h
+
+        # MLP branch                
+        h = apply_mod(
+            self.norm2(x),
+            shift_mlp, scale_mlp,
+            shift_mlp_r, scale_mlp_r,
+            self.split_point
+        )
+        h = self.mlp(h)
+        h = apply_gate(h, gate_mlp, gate_mlp_r, self.split_point)
+        x = x + h
+
         return x
 
 
