@@ -335,38 +335,32 @@ class JiT(nn.Module):
         y: (N,)
         """
         # class and time embeddings
-        t_emb = self.t_embedder(t)          # (N, D)
-        y_emb = self.y_embedder(y)          # (N, D)
-        c_base = t_emb + y_emb              # (N, D)
+        t_emb = self.t_embedder(t)
+        y_emb = self.y_embedder(y)
+        c = t_emb + y_emb
 
-        # patch + positional embedding
-        x = self.x_embedder(x)              # (N, T, D)
-        x = x + self.pos_embed
+        # forward JiT
+        x = self.x_embedder(x)
+        x += self.pos_embed
 
         for i, block in enumerate(self.blocks):
-            # insert in-context tokens once
+
+            # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens = in_context_tokens + self.in_context_posemb
+                in_context_tokens += self.in_context_posemb  # [B, self.in_context_len, self.hidden_size]
+
+                # apply masking
+                drop_prob = 0.1
+                token_mask = (torch.rand(x.shape[0], self.in_context_len, 1, device=x.device) > drop_prob).float()
+                in_context_tokens = in_context_tokens * token_mask
+
                 x = torch.cat([in_context_tokens, x], dim=1)
 
-            # conditioning for this block
-            if self.in_context_len > 0 and i >= self.in_context_start:
-                in_context_tokens = x[:, :self.in_context_len]                 # (N, L, D)
-                c_block = c_base + in_context_tokens.mean(dim=1)               # (N, L, D)
-                rope = self.feat_rope_incontext
-            else:
-                c_block = c_base                                               # (N, D)
-                rope = self.feat_rope
+            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-            x = block(x, c_block, rope)
-
-        # remove prepended in-context tokens before decoding
-        if self.in_context_len > 0:
-            x = x[:, self.in_context_len:]
-
-        # final layer should use the base conditioning, not the tokenwise one
-        x = self.final_layer(x, c_base)
+        x = x[:, self.in_context_len:]
+        x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
         return output
