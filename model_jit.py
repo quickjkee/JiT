@@ -328,7 +328,7 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y):
+    def forward(self, x, t, y, do_train=False):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -351,9 +351,10 @@ class JiT(nn.Module):
                 in_context_tokens += self.in_context_posemb  # [B, self.in_context_len, self.hidden_size]
 
                 # apply masking
-                drop_prob = 0.1
-                token_mask = (torch.rand(x.shape[0], self.in_context_len, 1, device=x.device) > drop_prob).float()
-                in_context_tokens = in_context_tokens * token_mask
+                if do_train:
+                    drop_prob = 0.1
+                    token_mask = (torch.rand(x.shape[0], self.in_context_len, 1, device=x.device) > drop_prob).float()
+                    in_context_tokens = in_context_tokens * token_mask
 
                 x = torch.cat([in_context_tokens, x], dim=1)
 
