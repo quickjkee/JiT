@@ -156,6 +156,48 @@ class Attention(nn.Module):
         return x
 
 
+class AttentionSplit(nn.Module):
+    def __init__(self, dim, split_point, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+
+        self.q_norm = RMSNormSplit(head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
+        self.k_norm = RMSNormSplit(head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.qkv_registers = nn.Linear(dim, dim * 3, bias=qkv_bias)
+
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+        self.split_point = split_point
+
+    def forward(self, x, rope):
+        B, N, C = x.shape
+
+        x_reg = x[:, :self.split_point, :] 
+        x_patch = x[:, self.split_point:, :] 
+
+        qkv_cls = self.qkv_registers(x_reg)
+        qkv_patch = self.qkv(x_patch)  
+        qkv = torch.cat([qkv_cls, qkv_patch], dim=1)   # [B, N, 3C]
+
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+
+        q = rope(self.q_norm(q))
+        k = rope(self.k_norm(k))
+
+        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+        x = x.transpose(1, 2).reshape(B, N, C)
+
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
 class SwiGLUFFN(nn.Module):
     def __init__(
         self,
@@ -177,7 +219,7 @@ class SwiGLUFFN(nn.Module):
         return self.w3(self.ffn_dropout(hidden))
 
 
-class SplitSwiGLUFFN(nn.Module):
+class SwiGLUFFNSplit(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -191,42 +233,28 @@ class SplitSwiGLUFFN(nn.Module):
 
         self.split_point = split_point
 
-        # shared projection (value + gate together)
+        # shared
         self.w12 = nn.Linear(dim, 2 * hidden_dim, bias=bias)
-
-        # separate gate transforms (lightweight)
-        self.gate_main = nn.Linear(hidden_dim, hidden_dim, bias=bias)
-        self.gate_reg = nn.Linear(hidden_dim, hidden_dim, bias=bias) if split_point > 0 else None
-
         self.ffn_dropout = nn.Dropout(drop)
 
+        # split output projection
         self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
         self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias) if split_point > 0 else None
 
     def forward(self, x):
         x12 = self.w12(x)
-        x1, x2 = x12.chunk(2, dim=-1)  # x1=value, x2=pre-gate
+        x1, x2 = x12.chunk(2, dim=-1)
+        hidden = F.silu(x1) * x2
+        hidden = self.ffn_dropout(hidden)
 
         if self.split_point > 0:
-            v_reg = x1[:, :self.split_point]
-            v_main = x1[:, self.split_point:]
-
-            g_reg = self.gate_reg(x2[:, :self.split_point])
-            g_main = self.gate_main(x2[:, self.split_point:])
-
-            h_reg = F.silu(g_reg) * v_reg
-            h_main = F.silu(g_main) * v_main
-
-            h_reg = self.ffn_dropout(h_reg)
-            h_main = self.ffn_dropout(h_main)
+            h_reg = hidden[:, :self.split_point]
+            h_main = hidden[:, self.split_point:]
 
             y_reg = self.w3_reg(h_reg)
             y_main = self.w3_main(h_main)
             return torch.cat([y_reg, y_main], dim=1)
 
-        g = self.gate_main(x2)
-        hidden = F.silu(g) * x1
-        hidden = self.ffn_dropout(hidden)
         return self.w3_main(hidden)
 
 
@@ -256,13 +284,21 @@ class JiTBlock(nn.Module):
         super().__init__()
 
         self.split_point = split_point
-        self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                              attn_drop=attn_drop, proj_drop=proj_drop)
+
+        self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 \
+                else RMSNorm(hidden_size, eps=1e-6)
+                     
+        self.attn = AttentionSplit(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
+                                   attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point) if split_point > 0 \
+               else Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
+                                    attn_drop=attn_drop, proj_drop=proj_drop)
+                                    
         self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
-            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
+        self.mlp = SwiGLUFFNSplit(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
+              else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
+
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
