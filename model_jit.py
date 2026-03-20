@@ -180,9 +180,9 @@ class AttentionSplit(nn.Module):
         x_reg = x[:, :self.split_point, :] 
         x_patch = x[:, self.split_point:, :] 
 
-        qkv_cls = self.qkv_registers(x_reg)
+        qkv_reg = self.qkv_registers(x_reg)
         qkv_patch = self.qkv(x_patch)  
-        qkv = torch.cat([qkv_cls, qkv_patch], dim=1)   # [B, N, 3C]
+        qkv = torch.cat([qkv_reg, qkv_patch], dim=1)   # [B, N, 3C]
 
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
