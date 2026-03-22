@@ -161,20 +161,20 @@ class LoRAQKVReg(nn.Module):
         super().__init__()
         self.rank = rank
         self.alpha = alpha if alpha is not None else rank
-        self.scaling = self.alpha / self.rank
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-
-        # LoRA: down -> up
         self.lora_a = nn.Linear(dim, rank, bias=False)
         self.lora_b = nn.Linear(rank, 3 * dim, bias=False)
 
-        # Standard init: A random/small, B zero so initial delta is zero
         nn.init.kaiming_uniform_(self.lora_a.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_b.weight)
 
-    def forward(self, cls_token):
-        return self.lora_b(self.dropout(self.lora_a(cls_token))) * self.scaling
+        scale = self.alpha / self.rank
+        self.register_buffer("lora_scale", torch.tensor(scale, dtype=torch.float32))
+
+    def forward(self, x):
+        out = self.lora_b(self.dropout(self.lora_a(x)))
+        return out * self.lora_scale.to(dtype=out.dtype, device=out.device)
 
 
 class AttentionSplitLoRA(nn.Module):
@@ -220,9 +220,10 @@ class AttentionSplitLoRA(nn.Module):
         qkv = self.qkv(x)  # (B, N, 3C)
 
         # LoRA update for reg token only
-        reg_tokens = x[:, :self.split_point, :]  
-        delta_reg_qkv = self.reg_lora_qkv(reg_tokens) 
-        qkv[:, :self.split_point, :] = qkv[:, :self.split_point, :] + delta_reg_qkv
+        delta_reg_qkv = self.reg_lora_qkv(x[:, :self.split_point, :])
+        qkv_regs = qkv[:, :self.split_point, :] + delta_reg_qkv
+        qkv_patch = qkv[:, self.split_point:, :]
+        qkv = torch.cat([qkv_regs, qkv_patch], dim=1)
 
         # Reshape to q, k, v
         qkv = qkv.reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
