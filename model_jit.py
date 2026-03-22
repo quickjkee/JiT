@@ -187,7 +187,7 @@ class AttentionSplitLoRA(nn.Module):
         qk_norm=True,
         attn_drop=0.0,
         proj_drop=0.0,
-        lora_rank=16,
+        lora_rank=256,
         lora_alpha=None,
         lora_drop=0.0,
     ):
@@ -222,7 +222,7 @@ class AttentionSplitLoRA(nn.Module):
         # LoRA update for reg token only
         reg_tokens = x[:, :self.split_point, :]  
         delta_reg_qkv = self.reg_lora_qkv(reg_tokens) 
-        qkv[:, :self.split_point, :] += delta_reg_qkv
+        qkv[:, :self.split_point, :] = qkv[:, :self.split_point, :] + delta_reg_qkv
 
         # Reshape to q, k, v
         qkv = qkv.reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
