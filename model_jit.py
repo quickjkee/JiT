@@ -156,17 +156,58 @@ class Attention(nn.Module):
         return x
 
 
-class AttentionSplit(nn.Module):
-    def __init__(self, dim, split_point, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
+class LoRAQKVReg(nn.Module):
+    def __init__(self, dim, rank=16, alpha=None, dropout=0.0):
         super().__init__()
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
+        self.rank = rank
+        self.alpha = alpha if alpha is not None else rank
+        self.scaling = self.alpha / self.rank
 
-        self.q_norm = RMSNormSplit(head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
-        self.k_norm = RMSNormSplit(head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+        # LoRA: down -> up
+        self.lora_a = nn.Linear(dim, rank, bias=False)
+        self.lora_b = nn.Linear(rank, 3 * dim, bias=False)
+
+        # Standard init: A random/small, B zero so initial delta is zero
+        nn.init.kaiming_uniform_(self.lora_a.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_b.weight)
+
+    def forward(self, cls_token):
+        return self.lora_b(self.dropout(self.lora_a(cls_token))) * self.scaling
+
+
+class AttentionSplitLoRA(nn.Module):
+    def __init__(
+        self,
+        dim,
+        split_point,
+        num_heads=8,
+        qkv_bias=True,
+        qk_norm=True,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        lora_rank=16,
+        lora_alpha=None,
+        lora_drop=0.0,
+    ):
+        super().__init__()
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.dim = dim
+
+        self.q_norm = RMSNormSplit(self.head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
+        self.k_norm = RMSNormSplit(self.head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.qkv_registers = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.reg_lora_qkv = LoRAQKVReg(
+            dim=dim,
+            rank=lora_rank,
+            alpha=lora_alpha,
+            dropout=lora_drop,
+        )
 
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
@@ -174,23 +215,30 @@ class AttentionSplit(nn.Module):
 
         self.split_point = split_point
 
-    def forward(self, x, rope):
+    def forward(self, x, rope=None):
         B, N, C = x.shape
+        qkv = self.qkv(x)  # (B, N, 3C)
 
-        x_reg = x[:, :self.split_point, :] 
-        x_patch = x[:, self.split_point:, :] 
+        # LoRA update for reg token only
+        reg_tokens = x[:, :self.split_point, :]  
+        delta_reg_qkv = self.reg_lora_qkv(reg_tokens) 
+        qkv[:, :self.split_point, :] += delta_reg_qkv
 
-        qkv_reg = self.qkv_registers(x_reg)
-        qkv_patch = self.qkv(x_patch)  
-        qkv = torch.cat([qkv_reg, qkv_patch], dim=1)   # [B, N, 3C]
+        # Reshape to q, k, v
+        qkv = qkv.reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
-        q = rope(self.q_norm(q))
-        k = rope(self.k_norm(k))
+        if rope is not None:
+            q = rope(q)
+            k = rope(k)
 
-        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+        x = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+        )
         x = x.transpose(1, 2).reshape(B, N, C)
 
         x = self.proj(x)
@@ -288,8 +336,8 @@ class JiTBlock(nn.Module):
         self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 \
                 else RMSNorm(hidden_size, eps=1e-6)
                      
-        self.attn = AttentionSplit(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                                   attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point) if split_point > 0 \
+        self.attn = AttentionSplitLoRA(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
+                                       attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point) if split_point > 0 \
                else Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
                                     attn_drop=attn_drop, proj_drop=proj_drop)
                                     
