@@ -282,6 +282,7 @@ class JiTBlock(nn.Module):
                 nn.SiLU(),
                 nn.Linear(256, 6 * hidden_size, bias=True)
             )
+            self.reg_alpha = nn.Parameter(torch.tensor(0.0))
 
     @torch.compile
     def forward(self, x, c, feat_rope=None):
@@ -292,7 +293,6 @@ class JiTBlock(nn.Module):
             x_reg = x[:, :self.split_point, :]        # [B, R, D]
             x_patch = x[:, self.split_point:, :]      # [B, P, D]
 
-            # More stable than raw dot product on unnormalized activations.
             q = F.normalize(x_reg, dim=-1)
             k = F.normalize(x_patch, dim=-1)
 
@@ -300,7 +300,8 @@ class JiTBlock(nn.Module):
             weights = sim.softmax(dim=-1)                                  # [B, R, P]
             reg_patch_ctx = torch.matmul(weights, x_patch)                 # [B, R, D]
 
-            reg_mod = self.adaLN_modulation_regs(reg_patch_ctx)          # [B, R, 6D]
+            reg_delta = self.adaLN_modulation_regs(reg_patch_ctx)          # [B, R, 6D]
+            reg_mod = mod.unsqueeze(1) + self.reg_alpha.tanh() * reg_delta # [B, R, 6D]
 
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
         if reg_mod is not None:
