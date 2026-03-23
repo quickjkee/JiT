@@ -21,7 +21,7 @@ def apply_mod(x, shift, scale, shift_reg=None, scale_reg=None, split_point=0):
     x_main = x[:, split_point:]  # [B, P, D]
 
     # per-register modulation: shift_reg/scale_reg are [B, R, D]
-    x_reg = x_reg * (1 + scale_reg.unsqueeze(1)) + shift_reg.unsqueeze(1)
+    x_reg = x_reg * (1 + scale_reg) + shift_reg
     x_main = x_main * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
     return torch.cat([x_reg, x_main], dim=1)
 
@@ -34,7 +34,7 @@ def apply_gate(x, gate, gate_reg=None, split_point=0):
     x_main = x[:, split_point:]  # [B, P, D]
 
     # per-register gate: gate_reg is [B, R, D]
-    x_reg = gate_reg.unsqueeze(1) * x_reg
+    x_reg = gate_reg * x_reg
     x_main = gate.unsqueeze(1) * x_main
     return torch.cat([x_reg, x_main], dim=1)
 
