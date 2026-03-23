@@ -17,23 +17,27 @@ def apply_mod(x, shift, scale, shift_reg=None, scale_reg=None, split_point=0):
     if split_point <= 0:
         return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
-    x_reg = x[:, :split_point]
-    x_main = x[:, split_point:]
+    x_reg = x[:, :split_point]   # [B, R, D]
+    x_main = x[:, split_point:]  # [B, P, D]
 
-    x_reg = x_reg * (1 + scale_reg.unsqueeze(1)) + shift_reg.unsqueeze(1)
+    # per-register modulation: shift_reg/scale_reg are [B, R, D]
+    x_reg = x_reg * (1 + scale_reg) + shift_reg
     x_main = x_main * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
     return torch.cat([x_reg, x_main], dim=1)
+
 
 def apply_gate(x, gate, gate_reg=None, split_point=0):
     if split_point <= 0:
         return gate.unsqueeze(1) * x
 
-    x_reg = x[:, :split_point]
-    x_main = x[:, split_point:]
+    x_reg = x[:, :split_point]   # [B, R, D]
+    x_main = x[:, split_point:]  # [B, P, D]
 
-    x_reg = gate_reg.unsqueeze(1) * x_reg
+    # per-register gate: gate_reg is [B, R, D]
+    x_reg = gate_reg * x_reg
     x_main = gate.unsqueeze(1) * x_main
     return torch.cat([x_reg, x_main], dim=1)
+
 
 
 class BottleneckPatchEmbed(nn.Module):
@@ -156,97 +160,6 @@ class Attention(nn.Module):
         return x
 
 
-class LoRAQKVReg(nn.Module):
-    def __init__(self, dim, rank=16, alpha=None, dropout=0.0):
-        super().__init__()
-        self.rank = rank
-        self.alpha = alpha if alpha is not None else rank
-
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.lora_a = nn.Linear(dim, rank, bias=False)
-        self.lora_b = nn.Linear(rank, 3 * dim, bias=False)
-
-        nn.init.kaiming_uniform_(self.lora_a.weight, a=math.sqrt(5))
-        nn.init.zeros_(self.lora_b.weight)
-
-        scale = self.alpha / self.rank
-        self.register_buffer("lora_scale", torch.tensor(scale, dtype=torch.float32))
-
-    def forward(self, x):
-        out = self.lora_b(self.dropout(self.lora_a(x)))
-        return out * self.lora_scale.to(dtype=out.dtype, device=out.device)
-
-
-class AttentionSplitLoRA(nn.Module):
-    def __init__(
-        self,
-        dim,
-        split_point,
-        num_heads=8,
-        qkv_bias=True,
-        qk_norm=True,
-        attn_drop=0.0,
-        proj_drop=0.0,
-        lora_rank=512,
-        lora_alpha=None,
-        lora_drop=0.0,
-    ):
-        super().__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.dim = dim
-
-        self.q_norm = RMSNormSplit(self.head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
-        self.k_norm = RMSNormSplit(self.head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.reg_lora_qkv = LoRAQKVReg(
-            dim=dim,
-            rank=lora_rank,
-            alpha=lora_alpha,
-            dropout=lora_drop,
-        )
-
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-        self.split_point = split_point
-
-    def forward(self, x, rope=None):
-        B, N, C = x.shape
-        qkv = self.qkv(x)  # (B, N, 3C)
-
-        # LoRA update for reg token only
-        delta_reg_qkv = self.reg_lora_qkv(x[:, :self.split_point, :])
-        qkv_regs = qkv[:, :self.split_point, :] + delta_reg_qkv
-        qkv_patch = qkv[:, self.split_point:, :]
-        qkv = torch.cat([qkv_regs, qkv_patch], dim=1)
-
-        # Reshape to q, k, v
-        qkv = qkv.reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        if rope is not None:
-            q = rope(q)
-            k = rope(k)
-
-        x = F.scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.attn_drop.p if self.training else 0.0,
-        )
-        x = x.transpose(1, 2).reshape(B, N, C)
-
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-
 class SwiGLUFFN(nn.Module):
     def __init__(
         self,
@@ -268,7 +181,7 @@ class SwiGLUFFN(nn.Module):
         return self.w3(self.ffn_dropout(hidden))
 
 
-class SwiGLUFFNSplit(nn.Module):
+class SplitSwiGLUFFN(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -334,39 +247,68 @@ class JiTBlock(nn.Module):
 
         self.split_point = split_point
 
-        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
-                     
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                              attn_drop=attn_drop, proj_drop=proj_drop)
-                                    
-        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm1 = (
+            RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point)
+            if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+        )
+        self.norm2 = (
+            RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point)
+            if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+        )
+
+        self.attn = Attention(
+            hidden_size,
+            num_heads=num_heads,
+            qkv_bias=True,
+            qk_norm=True,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+        )
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLUFFNSplit(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
-              else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
+        self.mlp = (
+            SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point)
+            if split_point > 0 else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        )
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
-        
+
         if split_point > 0:
-            self.adaLN_scale = nn.Parameter(torch.ones(1, 6 * hidden_size))
-            self.adaLN_delta = nn.Parameter(torch.zeros(1, 6 * hidden_size))
+            self.adaLN_modulation_regs = nn.Sequential(
+                nn.Linear(hidden_size, 256, bias=True),
+                nn.SiLU(),
+                nn.Linear(256, 6 * hidden_size, bias=True)
+            )
 
     @torch.compile
-    def forward(self, x,  c, feat_rope=None):
-        mod = self.adaLN_modulation(c)
-        reg_mod = mod * self.adaLN_scale + self.adaLN_delta if self.split_point > 0 else None
+    def forward(self, x, c, feat_rope=None):
+        mod = self.adaLN_modulation(c)  # [B, 6D]
+        reg_mod = None
 
-        # Modulation splitting
+        if self.split_point > 0:
+            x_reg = x[:, :self.split_point, :]        # [B, R, D]
+            x_patch = x[:, self.split_point:, :]      # [B, P, D]
+
+            # More stable than raw dot product on unnormalized activations.
+            q = F.normalize(x_reg, dim=-1)
+            k = F.normalize(x_patch, dim=-1)
+
+            sim = torch.matmul(q, k.transpose(-1, -2))                     # [B, R, P]
+            weights = sim.softmax(dim=-1)                                  # [B, R, P]
+            reg_patch_ctx = torch.matmul(weights, x_patch)                 # [B, R, D]
+
+            reg_mod = self.adaLN_modulation_regs(reg_patch_ctx)          # [B, R, 6D]
+
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
         if reg_mod is not None:
             shift_msa_r, scale_msa_r, gate_msa_r, shift_mlp_r, scale_mlp_r, gate_mlp_r = split_mod(reg_mod)
         else:
-            shift_msa_r = scale_msa_r = gate_msa_r = shift_mlp_r = scale_mlp_r = gate_mlp_r = None
-        
-        # Attn branch
+            shift_msa_r = scale_msa_r = gate_msa_r = None
+            shift_mlp_r = scale_mlp_r = gate_mlp_r = None
+
         h = apply_mod(
             self.norm1(x),
             shift_msa, scale_msa,
@@ -377,7 +319,6 @@ class JiTBlock(nn.Module):
         h = apply_gate(h, gate_msa, gate_msa_r, self.split_point)
         x = x + h
 
-        # MLP branch                
         h = apply_mod(
             self.norm2(x),
             shift_mlp, scale_mlp,
