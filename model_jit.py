@@ -187,7 +187,7 @@ class AttentionSplitLoRA(nn.Module):
         qk_norm=True,
         attn_drop=0.0,
         proj_drop=0.0,
-        lora_rank=256,
+        lora_rank=512,
         lora_alpha=None,
         lora_drop=0.0,
     ):
