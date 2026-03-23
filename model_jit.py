@@ -21,7 +21,7 @@ def apply_mod(x, shift, scale, shift_reg=None, scale_reg=None, split_point=0):
     x_main = x[:, split_point:]  # [B, P, D]
 
     # per-register modulation: shift_reg/scale_reg are [B, R, D]
-    x_reg = x_reg * (1 + scale_reg) + shift_reg
+    x_reg = x_reg * (1 + scale_reg.unsqueeze(1)) + shift_reg.unsqueeze(1)
     x_main = x_main * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
     return torch.cat([x_reg, x_main], dim=1)
 
@@ -34,7 +34,7 @@ def apply_gate(x, gate, gate_reg=None, split_point=0):
     x_main = x[:, split_point:]  # [B, P, D]
 
     # per-register gate: gate_reg is [B, R, D]
-    x_reg = gate_reg * x_reg
+    x_reg = gate_reg.unsqueeze(1) * x_reg
     x_main = gate.unsqueeze(1) * x_main
     return torch.cat([x_reg, x_main], dim=1)
 
@@ -283,25 +283,19 @@ class JiTBlock(nn.Module):
                 nn.Linear(256, 6 * hidden_size, bias=True)
             )
             self.reg_alpha = nn.Parameter(torch.tensor(0.0))
+            nn.init.zeros_(self.adaLN_modulation_regs[-1].weight)
+            nn.init.zeros_(self.adaLN_modulation_regs[-1].bias)
 
     @torch.compile
     def forward(self, x, c, feat_rope=None):
         mod = self.adaLN_modulation(c)  # [B, 6D]
-        reg_mod = None
-
         if self.split_point > 0:
-            x_reg = x[:, :self.split_point, :]        # [B, R, D]
-            x_patch = x[:, self.split_point:, :]      # [B, P, D]
-
-            q = F.normalize(x_reg, dim=-1)
-            k = F.normalize(x_patch, dim=-1)
-
-            sim = torch.matmul(q, k.transpose(-1, -2))                     # [B, R, P]
-            weights = sim.softmax(dim=-1)                                  # [B, R, P]
-            reg_patch_ctx = torch.matmul(weights, x_patch)                 # [B, R, D]
-
-            reg_delta = self.adaLN_modulation_regs(reg_patch_ctx)          # [B, R, 6D]
-            reg_mod = mod.unsqueeze(1) + self.reg_alpha.tanh() * reg_delta # [B, R, 6D]
+            x_patch = x[:, self.split_point:, :]                              # [B, P, D]
+            patch_ctx = x_patch.mean(dim=1)                                   # [B, D]
+            reg_delta = self.adaLN_modulation_regs(patch_ctx)                 # [B, 6D]
+            reg_mod = mod.unsqueeze(1) + self.reg_alpha.tanh() * reg_delta.unsqueeze(1)
+        else:
+            reg_mod = None
 
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
         if reg_mod is not None:
