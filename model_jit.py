@@ -17,27 +17,23 @@ def apply_mod(x, shift, scale, shift_reg=None, scale_reg=None, split_point=0):
     if split_point <= 0:
         return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
-    x_reg = x[:, :split_point]   # [B, R, D]
-    x_main = x[:, split_point:]  # [B, P, D]
+    x_reg = x[:, :split_point]
+    x_main = x[:, split_point:]
 
-    # per-register modulation: shift_reg/scale_reg are [B, R, D]
-    x_reg = x_reg * (1 + scale_reg) + shift_reg
+    x_reg = x_reg * (1 + scale_reg.unsqueeze(1)) + shift_reg.unsqueeze(1)
     x_main = x_main * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
     return torch.cat([x_reg, x_main], dim=1)
-
 
 def apply_gate(x, gate, gate_reg=None, split_point=0):
     if split_point <= 0:
         return gate.unsqueeze(1) * x
 
-    x_reg = x[:, :split_point]   # [B, R, D]
-    x_main = x[:, split_point:]  # [B, P, D]
+    x_reg = x[:, :split_point]
+    x_main = x[:, split_point:]
 
-    # per-register gate: gate_reg is [B, R, D]
-    x_reg = gate_reg * x_reg
+    x_reg = gate_reg.unsqueeze(1) * x_reg
     x_main = gate.unsqueeze(1) * x_main
     return torch.cat([x_reg, x_main], dim=1)
-
 
 
 class BottleneckPatchEmbed(nn.Module):
@@ -246,64 +242,35 @@ class JiTBlock(nn.Module):
         super().__init__()
 
         self.split_point = split_point
-
-        self.norm1 = (
-            RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point)
-            if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
-        )
-        self.norm2 = (
-            RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point)
-            if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
-        )
-
-        self.attn = Attention(
-            hidden_size,
-            num_heads=num_heads,
-            qkv_bias=True,
-            qk_norm=True,
-            attn_drop=attn_drop,
-            proj_drop=proj_drop,
-        )
-
+        self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
+                              attn_drop=attn_drop, proj_drop=proj_drop)
+        self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = (
-            SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point)
-            if split_point > 0 else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
-        )
-
+        self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
+            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
-
+        
         if split_point > 0:
-            self.adaLN_modulation_regs = nn.Sequential(
-                nn.Linear(hidden_size, 256, bias=True),
-                nn.SiLU(),
-                nn.Linear(256, 6 * hidden_size, bias=True)
-            )
-            self.reg_alpha = nn.Parameter(torch.tensor(0.0))
-            nn.init.zeros_(self.adaLN_modulation_regs[-1].weight)
-            nn.init.zeros_(self.adaLN_modulation_regs[-1].bias)
+            self.adaLN_scale = nn.Parameter(torch.ones(1, 6 * hidden_size))
+            self.adaLN_delta = nn.Parameter(torch.zeros(1, 6 * hidden_size))
 
     @torch.compile
-    def forward(self, x, c, feat_rope=None):
-        mod = self.adaLN_modulation(c)  # [B, 6D]
-        if self.split_point > 0:
-            x_patch = x[:, self.split_point:, :]                              # [B, P, D]
-            patch_ctx = x_patch.mean(dim=1)                                   # [B, D]
-            reg_delta = self.adaLN_modulation_regs(patch_ctx)                 # [B, 6D]
-            reg_mod = mod.unsqueeze(1) + self.reg_alpha.tanh() * reg_delta.unsqueeze(1)
-        else:
-            reg_mod = None
+    def forward(self, x,  c, feat_rope=None):
+        mod = self.adaLN_modulation(c)
+        reg_mod = mod * self.adaLN_scale + self.adaLN_delta if self.split_point > 0 else None
 
+        # Modulation splitting
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
         if reg_mod is not None:
             shift_msa_r, scale_msa_r, gate_msa_r, shift_mlp_r, scale_mlp_r, gate_mlp_r = split_mod(reg_mod)
         else:
-            shift_msa_r = scale_msa_r = gate_msa_r = None
-            shift_mlp_r = scale_mlp_r = gate_mlp_r = None
-
+            shift_msa_r = scale_msa_r = gate_msa_r = shift_mlp_r = scale_mlp_r = gate_mlp_r = None
+        
+        # Attn branch
         h = apply_mod(
             self.norm1(x),
             shift_msa, scale_msa,
@@ -314,6 +281,7 @@ class JiTBlock(nn.Module):
         h = apply_gate(h, gate_msa, gate_msa_r, self.split_point)
         x = x + h
 
+        # MLP branch                
         h = apply_mod(
             self.norm2(x),
             shift_mlp, scale_mlp,
