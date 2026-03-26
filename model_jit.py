@@ -472,10 +472,19 @@ class JiT(nn.Module):
 
         # Zero-out adaLN modulation layers:
         for block in self.blocks:
-            nn.init.constant_(block.adaLN_proj.weight, 0)
-            nn.init.constant_(block.adaLN_proj.bias, 0)
+            # JiTBlock (LoRA-style)
+            if hasattr(block, "adaLN_proj"):
+                nn.init.constant_(block.adaLN_proj.weight, 0)
+                nn.init.constant_(block.adaLN_proj.bias, 0)
+
+            # LoRA B (if exists)
             if hasattr(block, "adaLN_lora_B"):
                 nn.init.constant_(block.adaLN_lora_B.weight, 0)
+
+            # DualJiTBlock (Sequential)
+            if hasattr(block, "adaLN_modulation"):
+                nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+                nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
@@ -519,7 +528,7 @@ class JiT(nn.Module):
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
-            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
+            x = block(x, c, self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
 
