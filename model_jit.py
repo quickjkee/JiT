@@ -127,13 +127,15 @@ def scaled_dot_product_attention(query, key, value, dropout_p=0.0) -> torch.Tens
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, split_point, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
 
-        self.q_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
-        self.k_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
+        self.q_norm = RMSNormSplit(head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(head_dim, eps=1e-6)
+        self.k_norm = RMSNormSplit(head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(head_dim, eps=1e-6)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -244,7 +246,7 @@ class JiTBlock(nn.Module):
         self.split_point = split_point
         self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                              attn_drop=attn_drop, proj_drop=proj_drop)
+                              attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
         self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
@@ -257,6 +259,7 @@ class JiTBlock(nn.Module):
         if split_point > 0:
             self.adaLN_scale = nn.Parameter(torch.ones(1, 6 * hidden_size))
             self.adaLN_delta = nn.Parameter(torch.zeros(1, 6 * hidden_size))
+
 
     @torch.compile
     def forward(self, x,  c, feat_rope=None):
