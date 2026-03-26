@@ -27,12 +27,11 @@ def unpack_batch(batch, device, args):
     else:
         x = batch['image']
         y = torch.tensor(batch['label'])
-    x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
-    x = x * 2.0 - 1.0
+    x = x.to(device, non_blocking=True)
     y = y.to(device, non_blocking=True)
     return x, y
 
-def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
+def train_one_epoch(model, model_without_ddp, vae, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -51,6 +50,8 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
 
         x, labels = unpack_batch(batch, device, args=args)
         labels = labels.to(device, non_blocking=True)
+        with torch.no_grad():
+            x = vae.encode(x).latent_dist.sample().mul_(0.18215)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             loss = model(x, labels)
@@ -85,7 +86,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
             break
 
 
-def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
+def evaluate(model_without_ddp, vae, args, epoch, batch_size=64, log_writer=None):
 
     model_without_ddp.eval()
     world_size = misc.get_world_size()
@@ -134,7 +135,7 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
         torch.distributed.barrier()
 
         # denormalize images 
-        sampled_images = (sampled_images + 1) / 2
+        sampled_images = vae.decode(sampled_images / 0.18215).sample
         sampled_images = sampled_images.detach().cpu()
 
         # distributed save images
