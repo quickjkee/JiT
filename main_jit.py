@@ -208,21 +208,7 @@ def main(args):
     model_without_ddp = model.module
 
     # Set up optimizer with weight decay adjustment for bias and norm layers
-    #param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
-    #optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
-
-    # Higher LR for registers
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
-    register_params = [model_without_ddp.net.register_tokens]
-    register_param_ids = {id(p) for p in register_params}
-
-    for g in param_groups:
-        g["params"] = [p for p in g["params"] if id(p) not in register_param_ids]
-    param_groups.append({
-        "params": register_params,
-        "lr": args.lr * 1000,
-        "weight_decay": args.weight_decay
-    })
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
 
