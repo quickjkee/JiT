@@ -251,20 +251,19 @@ class JiTBlock(nn.Module):
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
             else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
-        )
-        
+
+        self.adaLN_act = nn.SiLU()
+        self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         if split_point > 0:
-            self.adaLN_scale = nn.Parameter(torch.ones(1, 6 * hidden_size))
-            self.adaLN_delta = nn.Parameter(torch.zeros(1, 6 * hidden_size))
+            self.adaLN_lora_A = nn.Linear(hidden_size, 64, bias=False)
+            self.adaLN_lora_B = nn.Linear(64, 6 * hidden_size, bias=False)
 
 
     @torch.compile
     def forward(self, x,  c, feat_rope=None):
-        mod = self.adaLN_modulation(c)
-        reg_mod = mod * self.adaLN_scale + self.adaLN_delta if self.split_point > 0 else None
+        h = self.adaLN_act(c)
+        mod = self.adaLN_proj(h)
+        reg_mod = mod + self.adaLN_lora_B(self.adaLN_lora_A(h)) if self.split_point > 0 else None
 
         # Modulation splitting
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
