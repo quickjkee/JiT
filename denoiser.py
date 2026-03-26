@@ -53,7 +53,7 @@ class Denoiser(nn.Module):
 
         self.net = JiT_models[args.model](
                 input_size=args.img_size,
-                in_channels=3,
+                in_channels=4,
                 num_classes=args.class_num,
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
@@ -112,7 +112,7 @@ class Denoiser(nn.Module):
     def generate(self, labels):
         device = labels.device
         bsz = labels.size(0)
-        z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
+        z = self.noise_scale * torch.randn(bsz, 4, self.img_size, self.img_size, device=device)
         timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
 
         if self.method == "euler":

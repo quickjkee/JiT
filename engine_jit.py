@@ -51,7 +51,7 @@ def train_one_epoch(model, model_without_ddp, vae, data_loader, optimizer, devic
         x, labels = unpack_batch(batch, device, args=args)
         labels = labels.to(device, non_blocking=True)
         with torch.no_grad():
-            x = vae.encode(x).latent_dist.sample().mul_(0.18215)
+            x = vae.encode(x.float()).latent_dist.sample().mul_(0.18215)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             loss = model(x, labels)
