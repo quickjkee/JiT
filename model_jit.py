@@ -9,6 +9,8 @@ import math
 import torch.nn.functional as F
 from util.model_util import VisionRotaryEmbeddingFast, get_2d_sincos_pos_embed, RMSNorm, RMSNormSplit
 
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 def split_mod(mod):
     return mod.chunk(6, dim=-1)  # shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp
@@ -239,6 +241,75 @@ class FinalLayer(nn.Module):
         return x
 
 
+class DualJiTBlock(nn.Module):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0, split_point=0):
+        super().__init__()
+
+        self.split_point = split_point
+
+        self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) 
+        self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) 
+
+        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
+                              attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
+
+        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        self.mlp_context = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 12 * hidden_size, bias=True)
+        )
+
+    @torch.compile
+    def forward(self, x, c, feat_rope=None):
+        (
+            shift_msa, scale_msa, gate_msa,
+            shift_mlp, scale_mlp, gate_mlp,
+            shift_msa_context, scale_msa_context, gate_msa_context,
+            shift_mlp_context, scale_mlp_context, gate_mlp_context
+        ) = self.adaLN_modulation(c).chunk(12, dim=-1)
+
+        x_registers = x[:, :self.split_point, :]
+        x_patch = x[:, self.split_point:, :]
+
+        # Attention branch
+        h = self.norm1(x)
+
+        h_registers = h[:, :self.split_point, :]
+        h_patch = h[:, self.split_point:, :]
+
+        h_registers = modulate(h_registers, shift_msa_context, scale_msa_context)
+        h_patch = modulate(h_patch, shift_msa, scale_msa)
+
+        h = torch.cat([h_registers, h_patch], dim=1)
+        h = self.attn(h, rope=feat_rope)
+
+        h_registers = h[:, :self.split_point, :]
+        h_patch = h[:, self.split_point:, :]
+
+        x_registers = x_registers + gate_msa_context.unsqueeze(1) * h_registers
+        x_patch = x_patch + gate_msa.unsqueeze(1) * h_patch
+
+        x = torch.cat([x_registers, x_patch], dim=1)
+
+        # MLP branch
+        h = self.norm2(x)
+
+        h_registers = h[:, :self.split_point, :]
+        h_patch = h[:, self.split_point:, :]
+
+        h_registers = self.mlp_context(modulate(h_registers, shift_mlp_context, scale_mlp_context))
+        h_patch = self.mlp(modulate(h_patch, shift_mlp, scale_mlp))
+
+        x_registers = x[:, :self.split_point, :] + gate_mlp_context.unsqueeze(1) * h_registers
+        x_patch = x[:, self.split_point:, :] + gate_mlp.unsqueeze(1) * h_patch
+
+        x = torch.cat([x_registers, x_patch], dim=1)
+        return x
+
+
 class JiTBlock(nn.Module):
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0, split_point=0):
         super().__init__()
@@ -347,11 +418,6 @@ class JiT(nn.Module):
         # rope
         half_head_dim = hidden_size // num_heads // 2
         hw_seq_len = input_size // patch_size
-        self.feat_rope = VisionRotaryEmbeddingFast(
-            dim=half_head_dim,
-            pt_seq_len=hw_seq_len,
-            num_cls_token=0
-        )
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
@@ -359,18 +425,20 @@ class JiT(nn.Module):
         )
 
         # transformer
-        split_points = [
-            self.in_context_len if i >= self.in_context_start else 0
-            for i in range(depth)
-        ]
         self.blocks = nn.ModuleList([
-            JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
-                     attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     split_point=split_points[i])
-            for i in range(depth)
-        ])
-
+                        DualJiTBlock(
+                            hidden_size, num_heads, mlp_ratio=mlp_ratio,
+                            attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                            proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                            split_point=self.in_context_len,
+                        ) if i < 4 else JiTBlock(
+                            hidden_size, num_heads, mlp_ratio=mlp_ratio,
+                            attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                            proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                            split_point=self.in_context_len,
+                        )
+                        for i in range(depth)
+                    ])
         # linear predict
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
 
