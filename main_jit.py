@@ -19,6 +19,8 @@ from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
 from overfit_experiment import run_overfit
 from denoiser import Denoiser
 from diffusers.models import AutoencoderKL
+from rae.src.utils import instantiate_from_config, parse_configs
+from rae.src.stage1 import RAE
 
 
 def get_args_parser():
@@ -36,6 +38,8 @@ def get_args_parser():
     parser.add_argument('--reg_len', default=0, type=int)
     parser.add_argument('--in_context_start', default=4, type=int)
     parser.add_argument('--in_context_end', default=100, type=int)
+    parser.add_argument('--rae_config', default='configs/rae_config.yaml', 
+                                        type=str)
 
     # training
     parser.add_argument('--epochs', default=200, type=int)
@@ -213,8 +217,9 @@ def main(args):
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
 
-    # vae
-    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema").to(device)
+    # rae
+    rae_config, _, _, _, _, _, _, _ = parse_configs(args.rae_config)
+    rae: RAE = instantiate_from_config(rae_config).to(device)
 
     # Resume from checkpoint if provided
     checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
@@ -269,7 +274,7 @@ def main(args):
         if args.distributed and os.path.exists(args.data_path):
             data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch(model, model_without_ddp, vae, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
+        train_one_epoch(model, model_without_ddp, rae, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
 
         # Save checkpoint periodically
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
@@ -285,7 +290,7 @@ def main(args):
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
             with torch.no_grad():
-                evaluate(model_without_ddp, vae, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
+                evaluate(model_without_ddp, rae, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
             if 'Dino' in args.model:
                 evaluate_linear_probing(model_without_ddp.net, args, device=device)
             torch.cuda.empty_cache()

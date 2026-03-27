@@ -14,7 +14,7 @@ params:
       target: yt_tools.processing.process_fns.imagenet_preprocessing
       params:
         img_size: 256
-        model_type: sit
+        model_type: rae
       out_map: image
     - in_map:
         data: label
