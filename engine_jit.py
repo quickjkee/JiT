@@ -155,7 +155,7 @@ def evaluate(model_without_ddp, vae, args, epoch, batch_size=64, log_writer=None
 
     # compute FID and IS
     if log_writer is not None:
-        if args.img_size == 256 or args.img_size == 224:
+        if args.img_size == 256 or args.img_size == 32:
             fid_statistics_file = 'fid_stats/jit_in256_stats.npz'
         elif args.img_size == 512:
             fid_statistics_file = 'fid_stats/jit_in512_stats.npz'
