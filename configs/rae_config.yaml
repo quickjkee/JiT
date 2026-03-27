@@ -2,16 +2,16 @@ stage_1:
   target: stage1.RAE
   params:
     encoder_cls: 'Dinov2withNorm'
-    encoder_config_path: 'facebook/dinov2-with-registers-base'
+    encoder_config_path: '/slot/sandbox/d/in/data/0_data_unpacked/models--facebook--dinov2-with-registers-base'
     encoder_input_size: 224
     encoder_params:
-      dinov2_path: 'facebook/dinov2-with-registers-base'
+      dinov2_path: '/slot/sandbox/d/in/data/0_data_unpacked/models--facebook--dinov2-with-registers-base'
       normalize: true
     decoder_config_path: 'configs/decoder/ViTXL'
-    pretrained_decoder_path: 'models/decoders/dinov2/wReg_base/ViTXL_n08/model.pt'
+    pretrained_decoder_path: '/slot/sandbox/d/in/data/0_data_unpacked/models/decoders/dinov2/wReg_base/ViTXL_n08/model.pt'
     noise_tau: 0.0
     reshape_to_2d: true
-    normalization_stat_path: 'models/stats/dinov2/wReg_base/imagenet1k/stat.pt'
+    normalization_stat_path: '/slot/sandbox/d/in/data/0_data_unpacked/models/stats/dinov2/wReg_base/imagenet1k/stat.pt'
 
 stage_2:
   target: stage2.models.DDT.DiTwDDTHead

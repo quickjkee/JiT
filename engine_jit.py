@@ -31,7 +31,7 @@ def unpack_batch(batch, device, args):
     y = y.to(device, non_blocking=True)
     return x, y
 
-def train_one_epoch(model, model_without_ddp, vae, data_loader, optimizer, device, epoch, log_writer=None, args=None):
+def train_one_epoch(model, model_without_ddp, rae, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -51,7 +51,7 @@ def train_one_epoch(model, model_without_ddp, vae, data_loader, optimizer, devic
         x, labels = unpack_batch(batch, device, args=args)
         labels = labels.to(device, non_blocking=True)
         with torch.no_grad():
-            x = vae.encode(x.float()).latent_dist.sample().mul_(0.18215)
+            x = rae.encode(x)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             loss = model(x, labels)
@@ -86,7 +86,7 @@ def train_one_epoch(model, model_without_ddp, vae, data_loader, optimizer, devic
             break
 
 
-def evaluate(model_without_ddp, vae, args, epoch, batch_size=64, log_writer=None):
+def evaluate(model_without_ddp, rae, args, epoch, batch_size=64, log_writer=None):
 
     model_without_ddp.eval()
     world_size = misc.get_world_size()
@@ -135,7 +135,7 @@ def evaluate(model_without_ddp, vae, args, epoch, batch_size=64, log_writer=None
         torch.distributed.barrier()
 
         # denormalize images 
-        sampled_images = vae.decode(sampled_images / 0.18215).sample
+        sampled_images = rae.decode(sampled_images)
         sampled_images = sampled_images.detach().cpu()
 
         # distributed save images
@@ -155,7 +155,7 @@ def evaluate(model_without_ddp, vae, args, epoch, batch_size=64, log_writer=None
 
     # compute FID and IS
     if log_writer is not None:
-        if args.img_size == 256 or args.img_size == 32:
+        if args.img_size == 256 or args.img_size == 32 or args.img_size == 16:
             fid_statistics_file = 'fid_stats/jit_in256_stats.npz'
         elif args.img_size == 512:
             fid_statistics_file = 'fid_stats/jit_in512_stats.npz'

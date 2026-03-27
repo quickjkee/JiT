@@ -18,8 +18,8 @@ import copy
 from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
 from overfit_experiment import run_overfit
 from denoiser import Denoiser
-from diffusers.models import AutoencoderKL
-from rae.src.utils import instantiate_from_config, parse_configs
+from rae.src.utils.model_utils import instantiate_from_config
+from rae.src.utils.train_utils import parse_configs
 from rae.src.stage1 import RAE
 
 
