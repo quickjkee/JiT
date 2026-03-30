@@ -255,8 +255,8 @@ class JiTBlock(nn.Module):
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         if split_point > 0:
-            self.adaLN_lora_A = nn.Linear(hidden_size, 128, bias=False)
-            self.adaLN_lora_B = nn.Linear(128, 6 * hidden_size, bias=False)
+            self.adaLN_lora_A = nn.Linear(hidden_size, 256, bias=False)
+            self.adaLN_lora_B = nn.Linear(256, 6 * hidden_size, bias=False)
 
 
     @torch.compile
