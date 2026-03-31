@@ -126,105 +126,16 @@ def scaled_dot_product_attention(query, key, value, dropout_p=0.0) -> torch.Tens
     return attn_weight @ value
 
 
-class LoRAQKVReg(nn.Module):
-    def __init__(self, dim, rank=16, alpha=None, dropout=0.0):
-        super().__init__()
-        self.rank = rank
-        self.alpha = alpha if alpha is not None else rank
-
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.lora_a = nn.Linear(dim, rank, bias=False)
-        self.lora_b = nn.Linear(rank, 3 * dim, bias=False)
-
-        nn.init.kaiming_uniform_(self.lora_a.weight, a=math.sqrt(5))
-        nn.init.zeros_(self.lora_b.weight)
-
-        scale = self.alpha / self.rank
-        self.register_buffer("lora_scale", torch.tensor(scale, dtype=torch.float32))
-
-    def forward(self, x):
-        out = self.lora_b(self.dropout(self.lora_a(x)))
-        return out * self.lora_scale.to(dtype=out.dtype, device=out.device)
-
-
-class AttentionSplitLoRA(nn.Module):
-    def __init__(
-        self,
-        dim,
-        split_point,
-        num_heads=8,
-        qkv_bias=True,
-        qk_norm=True,
-        attn_drop=0.0,
-        proj_drop=0.0,
-        lora_rank=512,
-        lora_alpha=None,
-        lora_drop=0.0,
-    ):
-        super().__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.dim = dim
-
-        self.q_norm = RMSNormSplit(self.head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
-        self.k_norm = RMSNormSplit(self.head_dim, split_point=split_point, seq_dim=2) if qk_norm else nn.Identity()
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.reg_lora_qkv = LoRAQKVReg(
-            dim=dim,
-            rank=lora_rank,
-            alpha=lora_alpha,
-            dropout=lora_drop,
-        )
-
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-        self.split_point = split_point
-
-    def forward(self, x, rope=None):
-        B, N, C = x.shape
-        qkv = self.qkv(x)  # (B, N, 3C)
-
-        # LoRA update for reg token only
-        delta_reg_qkv = self.reg_lora_qkv(x[:, :self.split_point, :])
-        qkv_regs = qkv[:, :self.split_point, :] + delta_reg_qkv
-        qkv_patch = qkv[:, self.split_point:, :]
-        qkv = torch.cat([qkv_regs, qkv_patch], dim=1)
-
-        # Reshape to q, k, v
-        qkv = qkv.reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        if rope is not None:
-            q = rope(q)
-            k = rope(k)
-
-        x = F.scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.attn_drop.p if self.training else 0.0,
-        )
-        x = x.transpose(1, 2).reshape(B, N, C)
-
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, split_point, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
 
-        self.q_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
-        self.k_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
+        self.q_norm = RMSNormSplit(head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(head_dim, eps=1e-6)
+        self.k_norm = RMSNormSplit(head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(head_dim, eps=1e-6)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -334,10 +245,8 @@ class JiTBlock(nn.Module):
 
         self.split_point = split_point
         self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
-        self.attn = AttentionSplitLoRA(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                                       attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point) if split_point > 0 \
-               else Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                                    attn_drop=attn_drop, proj_drop=proj_drop)
+        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
+                              attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
         self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
@@ -346,8 +255,8 @@ class JiTBlock(nn.Module):
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         if split_point > 0:
-            self.adaLN_lora_A = nn.Linear(hidden_size, 128, bias=False)
-            self.adaLN_lora_B = nn.Linear(128, 6 * hidden_size, bias=False)
+            self.adaLN_lora_A = nn.Linear(hidden_size, 256, bias=False)
+            self.adaLN_lora_B = nn.Linear(256, 6 * hidden_size, bias=False)
 
 
     @torch.compile
