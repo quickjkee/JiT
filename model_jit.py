@@ -250,17 +250,20 @@ class JiTBlock(nn.Module):
         self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
-                   else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
+            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
 
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        if split_point > 0:
+            self.adaLN_lora_A = nn.Linear(hidden_size, 128, bias=False)
+            self.adaLN_lora_B = nn.Linear(128, 6 * hidden_size, bias=False)
 
 
     @torch.compile
     def forward(self, x,  c, feat_rope=None):
         h = self.adaLN_act(c)
         mod = self.adaLN_proj(h)
-        reg_mod = mod if self.split_point > 0 else None
+        reg_mod = mod + self.adaLN_lora_B(self.adaLN_lora_A(h)) if self.split_point > 0 else None
 
         # Modulation splitting
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
