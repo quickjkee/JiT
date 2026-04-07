@@ -180,20 +180,26 @@ class SwiGLUFFN(nn.Module):
 
 
 class SplitSwiGLUFFN(nn.Module):
-    def __init__(self, dim, hidden_dim, drop=0.0, bias=True, split_point=0, lora_rank=512):
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        drop: float = 0.0,
+        bias: bool = True,
+        split_point: int = 0,
+    ) -> None:
         super().__init__()
         hidden_dim = int(hidden_dim * 2 / 3)
+
         self.split_point = split_point
 
         # shared
         self.w12 = nn.Linear(dim, 2 * hidden_dim, bias=bias)
-        self.w3 = nn.Linear(hidden_dim, dim, bias=bias)
         self.ffn_dropout = nn.Dropout(drop)
 
-        # register output = w3 + lora delta (not a separate w3_reg)
-        if split_point > 0:
-            self.w3_lora_A = nn.Linear(hidden_dim, lora_rank, bias=False)
-            self.w3_lora_B = nn.Linear(lora_rank, dim, bias=False)
+        # split output projection
+        self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
+        self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias) if split_point > 0 else None
 
     def forward(self, x):
         x12 = self.w12(x)
@@ -205,11 +211,11 @@ class SplitSwiGLUFFN(nn.Module):
             h_reg = hidden[:, :self.split_point]
             h_main = hidden[:, self.split_point:]
 
-            y_main = self.w3(h_main)
-            y_reg = self.w3(h_reg) + self.w3_lora_B(self.w3_lora_A(h_reg))
+            y_reg = self.w3_reg(h_reg)
+            y_main = self.w3_main(h_main)
             return torch.cat([y_reg, y_main], dim=1)
 
-        return self.w3(hidden)
+        return self.w3_main(hidden)
 
 
 class FinalLayer(nn.Module):
@@ -234,7 +240,8 @@ class FinalLayer(nn.Module):
 
 
 class JiTBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0, split_point=0):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0,
+                 split_point=0, lora_rank=128, reg2patch_bottleneck=128):
         super().__init__()
 
         self.split_point = split_point
@@ -243,8 +250,9 @@ class JiTBlock(nn.Module):
                               attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
         self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
-            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
+        self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop,
+                                   split_point=split_point) if split_point > 0 \
+            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
 
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
@@ -252,9 +260,15 @@ class JiTBlock(nn.Module):
             self.adaLN_lora_A = nn.Linear(hidden_size, 128, bias=False)
             self.adaLN_lora_B = nn.Linear(128, 6 * hidden_size, bias=False)
 
+            # Register-to-patch modulation: registers produce scale/shift for patches
+            self.reg2patch = nn.Sequential(
+                nn.Linear(hidden_size, reg2patch_bottleneck, bias=False),
+                nn.SiLU(),
+                nn.Linear(reg2patch_bottleneck, 2 * hidden_size, bias=False),
+            )
 
     @torch.compile
-    def forward(self, x,  c, feat_rope=None):
+    def forward(self, x, c, feat_rope=None):
         h = self.adaLN_act(c)
         mod = self.adaLN_proj(h)
         reg_mod = mod + self.adaLN_lora_B(self.adaLN_lora_A(h)) if self.split_point > 0 else None
@@ -265,7 +279,7 @@ class JiTBlock(nn.Module):
             shift_msa_r, scale_msa_r, gate_msa_r, shift_mlp_r, scale_mlp_r, gate_mlp_r = split_mod(reg_mod)
         else:
             shift_msa_r = scale_msa_r = gate_msa_r = shift_mlp_r = scale_mlp_r = gate_mlp_r = None
-        
+
         # Attn branch
         h = apply_mod(
             self.norm1(x),
@@ -277,7 +291,15 @@ class JiTBlock(nn.Module):
         h = apply_gate(h, gate_msa, gate_msa_r, self.split_point)
         x = x + h
 
-        # MLP branch                
+        # Register-to-patch modulation (after attention, before MLP)
+        if self.split_point > 0:
+            reg_summary = x[:, :self.split_point].mean(dim=1)  # (B, D)
+            scale_rp, shift_rp = self.reg2patch(reg_summary).chunk(2, dim=-1)  # (B, D) each
+            x_patch = x[:, self.split_point:]
+            x_patch = x_patch * (1 + scale_rp.unsqueeze(1)) + shift_rp.unsqueeze(1)
+            x = torch.cat([x[:, :self.split_point], x_patch], dim=1)
+
+        # MLP branch
         h = apply_mod(
             self.norm2(x),
             shift_mlp, scale_mlp,
@@ -402,6 +424,9 @@ class JiT(nn.Module):
             nn.init.constant_(block.adaLN_proj.bias, 0)
             if hasattr(block, "adaLN_lora_B"):
                 nn.init.constant_(block.adaLN_lora_B.weight, 0)
+            # Zero-init reg2patch so modulation starts as identity
+            if hasattr(block, "reg2patch"):
+                nn.init.constant_(block.reg2patch[-1].weight, 0)
 
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
@@ -457,27 +482,27 @@ class JiT(nn.Module):
 
 def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=4,
+               bottleneck_dim=128, patch_size=16, **kwargs)
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=4,
+               bottleneck_dim=128, patch_size=32, **kwargs)
 
 def JiT_L_16(**kwargs):
     return JiT(depth=24, hidden_size=1024, num_heads=16,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=8,
+               bottleneck_dim=128, patch_size=16, **kwargs)
 
 def JiT_L_32(**kwargs):
     return JiT(depth=24, hidden_size=1024, num_heads=16,
-               bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=8,
+               bottleneck_dim=128, patch_size=32, **kwargs)
 
 def JiT_H_16(**kwargs):
     return JiT(depth=32, hidden_size=1280, num_heads=16,
-               bottleneck_dim=256, patch_size=16, **kwargs) # in_context_len=32, in_context_start=10,
+               bottleneck_dim=256, patch_size=16, **kwargs)
 
 def JiT_H_32(**kwargs):
     return JiT(depth=32, hidden_size=1280, num_heads=16,
-               bottleneck_dim=256, patch_size=32, **kwargs) # in_context_len=32, in_context_start=10,
+               bottleneck_dim=256, patch_size=32, **kwargs)
 
 
 JiT_models = {
