@@ -7,18 +7,19 @@ from pathlib import Path
 
 import torch
 import torch.backends.cudnn as cudnn
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
 from util.crop import center_crop_arr, create_dataloader
 import util.misc as misc
+import util.dist as dist
 
 import copy
 from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
 from overfit_experiment import run_overfit
 from denoiser import Denoiser
-
 
 def get_args_parser():
     parser = argparse.ArgumentParser('JiT', add_help=False)
@@ -105,16 +106,6 @@ def get_args_parser():
     parser.add_argument('--save_last_freq', type=int, default=5,
                         help='Frequency (in epochs) to save checkpoints')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--device', default='cuda',
-                        help='Device to use for training/testing')
-
-    # distributed training
-    parser.add_argument('--world_size', default=1, type=int,
-                        help='Number of distributed processes')
-    parser.add_argument('--local_rank', default=-1, type=int)
-    parser.add_argument('--dist_on_itp', action='store_true')
-    parser.add_argument('--dist_url', default='env://',
-                        help='URL used to set up distributed training')
 
     # overfit experiment
     parser.add_argument('--overfit', action='store_true', help='Run tiny overfit experiment instead of full training')
@@ -127,27 +118,37 @@ def get_args_parser():
     parser.add_argument('--overfit_save_imgs', action='store_true', help='Save reconstructions during overfit')
     parser.add_argument('--overfit_img_freq', type=int, default=200, help='Save images every N steps')
 
-
     return parser
 
 
+def init_distributed_mode(timeout=30):
+    try:
+        dist.initialize()
+        dist.barrier()
+    except RuntimeError:
+        print(f'{">" * 75}  NCCL Error  {"<" * 75}', flush=True)
+        time.sleep(timeout)
+
+
 def main(args):
-    misc.init_distributed_mode(args)
+    init_distributed_mode()
+    misc.setup_for_distributed(dist.is_master())
     print('Job directory:', os.path.dirname(os.path.realpath(__file__)))
     print("Arguments:\n{}".format(args).replace(', ', ',\n'))
 
-    device = torch.device(args.device)
+    device = dist.get_local_rank()
+    torch.cuda.set_device(device)
 
     # Set seeds for reproducibility
-    seed = args.seed + misc.get_rank()
+    global_rank = dist.get_rank()
+    seed = args.seed + global_rank
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     cudnn.benchmark = True
     torch.set_float32_matmul_precision('high')
 
-    num_tasks = misc.get_world_size()
-    global_rank = misc.get_rank()
+    num_tasks = dist.get_world_size()
 
     # Set up TensorBoard logging (only on main process)
     if global_rank == 0 and args.output_dir is not None:
@@ -195,7 +196,7 @@ def main(args):
 
     model.to(device)
 
-    eff_batch_size = args.batch_size * misc.get_world_size()
+    eff_batch_size = args.batch_size * num_tasks
     if args.lr is None:  # only base_lr (blr) is specified
         args.lr = args.blr * eff_batch_size / 256
 
@@ -203,35 +204,67 @@ def main(args):
     print("Actual lr: {:.2e}".format(args.lr))
     print("Effective batch size: %d" % eff_batch_size)
 
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+    # Load checkpoint on rank 0 only, then broadcast to all ranks
+    checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
+    checkpoint = {}
+    if global_rank == 0 and checkpoint_path and os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+    if global_rank == 0 and 'model' in checkpoint:
+        model.load_state_dict(checkpoint['model'])
+
+    # Broadcast model params and buffers from rank 0 to all ranks
+    dist.barrier()
+    for param in model.parameters():
+        dist.broadcast(param.data, src=0)
+    for buffer in model.buffers():
+        dist.broadcast(buffer, src=0)
+    dist.barrier()
+
+    model = DDP(model, device_ids=[device])
     model_without_ddp = model.module
+
+    # Initialize EMA params on all ranks (from broadcast model params)
+    model_without_ddp.ema_params1 = copy.deepcopy(list(model_without_ddp.parameters()))
+    model_without_ddp.ema_params2 = copy.deepcopy(list(model_without_ddp.parameters()))
+
+    if global_rank == 0 and 'model_ema1' in checkpoint:
+        ema_state_dict1 = checkpoint['model_ema1']
+        ema_state_dict2 = checkpoint['model_ema2']
+        model_without_ddp.ema_params1 = [ema_state_dict1[name].to(device) for name, _ in model_without_ddp.named_parameters()]
+        model_without_ddp.ema_params2 = [ema_state_dict2[name].to(device) for name, _ in model_without_ddp.named_parameters()]
+        print("Resumed EMA from checkpoint at", args.resume)
+
+    # Broadcast EMA params from rank 0
+    for param in model_without_ddp.ema_params1:
+        dist.broadcast(param.data, src=0)
+    for param in model_without_ddp.ema_params2:
+        dist.broadcast(param.data, src=0)
+    dist.barrier()
 
     # Set up optimizer with weight decay adjustment for bias and norm layers
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
 
-    # Resume from checkpoint if provided
-    checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
-    if checkpoint_path and os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
+    if global_rank == 0 and 'optimizer' in checkpoint and 'epoch' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        args.start_epoch = checkpoint['epoch'] + 1
+        print("Loaded optimizer & epoch state!")
 
-        ema_state_dict1 = checkpoint['model_ema1']
-        ema_state_dict2 = checkpoint['model_ema2']
-        model_without_ddp.ema_params1 = [ema_state_dict1[name].cuda() for name, _ in model_without_ddp.named_parameters()]
-        model_without_ddp.ema_params2 = [ema_state_dict2[name].cuda() for name, _ in model_without_ddp.named_parameters()]
-        print("Resumed checkpoint from", args.resume)
+    # Broadcast optimizer state and start_epoch from rank 0
+    obj_list = [optimizer.state_dict()]
+    dist.broadcast_object_list(obj_list, src=0)
+    optimizer.load_state_dict(obj_list[0])
 
-        if 'optimizer' in checkpoint and 'epoch' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            args.start_epoch = checkpoint['epoch'] + 1
-            print("Loaded optimizer & scaler state!")
-        del checkpoint
-    else:
-        model_without_ddp.ema_params1 = copy.deepcopy(list(model_without_ddp.parameters()))
-        model_without_ddp.ema_params2 = copy.deepcopy(list(model_without_ddp.parameters()))
+    start_epoch_tensor = torch.tensor(args.start_epoch, dtype=torch.long, device=device)
+    dist.broadcast(start_epoch_tensor, src=0)
+    args.start_epoch = start_epoch_tensor.item()
+
+    dist.barrier()
+    if global_rank == 0 and not checkpoint:
         print("Training from scratch")
+    del checkpoint
 
     # Evaluate generation
     if args.evaluate_gen:
@@ -244,7 +277,7 @@ def main(args):
 
     # Toy overfit experiment
     if args.overfit:
-        if misc.is_main_process():
+        if dist.is_master():
             print("Running OVERFIT experiment (tiny subset) ...")
 
         run_overfit(
@@ -261,7 +294,7 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed and os.path.exists(args.data_path):
+        if num_tasks > 1 and os.path.exists(args.data_path):
             data_loader_train.sampler.set_epoch(epoch)
 
         train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
@@ -285,7 +318,7 @@ def main(args):
                 evaluate_linear_probing(model_without_ddp.net, args, device=device)
             torch.cuda.empty_cache()
 
-        if misc.is_main_process() and log_writer is not None:
+        if dist.is_master() and log_writer is not None:
             log_writer.flush()
 
     total_time = time.time() - start_time
