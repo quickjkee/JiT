@@ -180,26 +180,20 @@ class SwiGLUFFN(nn.Module):
 
 
 class SplitSwiGLUFFN(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        hidden_dim: int,
-        drop: float = 0.0,
-        bias: bool = True,
-        split_point: int = 0,
-    ) -> None:
+    def __init__(self, dim, hidden_dim, drop=0.0, bias=True, split_point=0, lora_rank=768):
         super().__init__()
         hidden_dim = int(hidden_dim * 2 / 3)
-
         self.split_point = split_point
 
         # shared
         self.w12 = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+        self.w3 = nn.Linear(hidden_dim, dim, bias=bias)
         self.ffn_dropout = nn.Dropout(drop)
 
-        # split output projection
-        self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
-        self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias) if split_point > 0 else None
+        # register output = w3 + lora delta (not a separate w3_reg)
+        if split_point > 0:
+            self.w3_lora_A = nn.Linear(hidden_dim, lora_rank, bias=False)
+            self.w3_lora_B = nn.Linear(lora_rank, dim, bias=False)
 
     def forward(self, x):
         x12 = self.w12(x)
@@ -211,11 +205,11 @@ class SplitSwiGLUFFN(nn.Module):
             h_reg = hidden[:, :self.split_point]
             h_main = hidden[:, self.split_point:]
 
-            y_reg = self.w3_reg(h_reg)
-            y_main = self.w3_main(h_main)
+            y_main = self.w3(h_main)
+            y_reg = self.w3(h_reg) + self.w3_lora_B(self.w3_lora_A(h_reg))
             return torch.cat([y_reg, y_main], dim=1)
 
-        return self.w3_main(hidden)
+        return self.w3(hidden)
 
 
 class FinalLayer(nn.Module):
