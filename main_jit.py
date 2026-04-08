@@ -121,6 +121,40 @@ def get_args_parser():
     return parser
 
 
+def _verify_checksum(name: str, tensors, device, global_rank: int):
+    """Allgather a scalar checksum from every rank and assert all ranks agree.
+
+    Works across all GPUs on all hosts (uses the full NCCL process group).
+    Reports mismatching ranks as (global_rank, host_idx, local_gpu) triples.
+    """
+    checksum = torch.tensor(0.0, device=device)
+    for t in tensors:
+        if isinstance(t, torch.Tensor):
+            checksum += t.to(device=device, dtype=torch.float32).sum()
+
+    all_checksums = dist.allgather(checksum.unsqueeze(0))  # [world_size]
+    max_diff = (all_checksums - all_checksums[0]).abs().max().item()
+
+    if global_rank == 0:
+        num_ranks = all_checksums.shape[0]
+        gpus_per_node = int(os.environ.get("GPUS_PER_NODE", "8"))
+        if max_diff == 0.0:
+            print(f"{name} checksum PASSED: all {num_ranks} ranks agree.")
+        else:
+            lines = []
+            for r, cs in enumerate(all_checksums.tolist()):
+                host_idx = r // gpus_per_node
+                local_gpu = r % gpus_per_node
+                marker = " <-- MISMATCH" if abs(cs - all_checksums[0].item()) > 0 else ""
+                lines.append(f"  rank {r:3d} (host {host_idx}, gpu {local_gpu}): {cs:.6e}{marker}")
+            raise RuntimeError(
+                f"{name} mismatch across ranks!\n"
+                f"  Max absolute diff: {max_diff:.6e}\n"
+                + "\n".join(lines)
+            )
+    dist.barrier()
+
+
 def init_distributed_mode(timeout=30):
     try:
         dist.initialize()
@@ -221,6 +255,10 @@ def main(args):
         dist.broadcast(buffer, src=0)
     dist.barrier()
 
+    _verify_checksum("Model params+buffers",
+                     list(model.parameters()) + list(model.buffers()),
+                     device, global_rank)
+
     model = DDP(model, device_ids=[device])
     model_without_ddp = model.module
 
@@ -242,6 +280,9 @@ def main(args):
         dist.broadcast(param.data, src=0)
     dist.barrier()
 
+    _verify_checksum("EMA1 params", model_without_ddp.ema_params1, device, global_rank)
+    _verify_checksum("EMA2 params", model_without_ddp.ema_params2, device, global_rank)
+
     # Set up optimizer with weight decay adjustment for bias and norm layers
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
@@ -262,6 +303,12 @@ def main(args):
     args.start_epoch = start_epoch_tensor.item()
 
     dist.barrier()
+
+    # Verify optimizer states are identical across all ranks after broadcast
+    opt_tensors = [v for group in optimizer.state_dict()['state'].values()
+                   for v in group.values()]
+    _verify_checksum("Optimizer state", opt_tensors, device, global_rank)
+
     if global_rank == 0 and not checkpoint:
         print("Training from scratch")
     del checkpoint
