@@ -13,7 +13,7 @@ params:
         image_bytes: image
       target: yt_tools.processing.process_fns.imagenet_preprocessing
       params:
-        img_size: 512
+        img_size: 256
         model_type: jit
       out_map: image
     - in_map:
