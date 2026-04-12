@@ -137,11 +137,11 @@ def get_local_rank():
 
 
 def worker_host_idx():
-    return int(os.environ["HOST_RANK"])
+    return int(os.environ.get("HOST_RANK", "0"))
 
 
 def num_hosts():
-    return int(os.environ["NUM_HOSTS"])
+    return int(os.environ.get("NUM_HOSTS", "1"))
 
 
 def get_world_size():

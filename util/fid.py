@@ -260,7 +260,7 @@ def calculate_fid(
         device = torch.device(device)
 
     if not os.path.exists(path):
-        raise RuntimeError('Invalid path: %s' % p)
+        raise RuntimeError('Invalid path: %s' % path)
 
     block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
 

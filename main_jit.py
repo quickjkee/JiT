@@ -8,7 +8,6 @@ from pathlib import Path
 import torch
 import torch.backends.cudnn as cudnn
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
@@ -17,9 +16,11 @@ import util.misc as misc
 import util.dist as dist
 
 import copy
-from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
-from overfit_experiment import run_overfit
+from engine_jit import train_one_epoch, evaluate
 from denoiser import Denoiser
+
+import underdeep as U
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser('JiT', add_help=False)
@@ -30,12 +31,12 @@ def get_args_parser():
     parser.add_argument('--img_size', default=256, type=int, help='Image size')
     parser.add_argument('--attn_dropout', type=float, default=0.0, help='Attention dropout rate')
     parser.add_argument('--proj_dropout', type=float, default=0.0, help='Projection dropout rate')
-    parser.add_argument('--dino_trained_path', type=str)
-    parser.add_argument('--dino_init_path', type=str)
     parser.add_argument('--in_context_len', default=32, type=int)
     parser.add_argument('--reg_len', default=0, type=int)
     parser.add_argument('--in_context_start', default=4, type=int)
-
+    
+    parser.add_argument('--exp_name', type=str, default="debug")
+    
     # training
     parser.add_argument('--epochs', default=200, type=int)
     parser.add_argument('--warmup_epochs', type=int, default=5, metavar='N',
@@ -106,18 +107,6 @@ def get_args_parser():
     parser.add_argument('--save_last_freq', type=int, default=5,
                         help='Frequency (in epochs) to save checkpoints')
     parser.add_argument('--log_freq', default=100, type=int)
-
-    # overfit experiment
-    parser.add_argument('--overfit', action='store_true', help='Run tiny overfit experiment instead of full training')
-    parser.add_argument('--overfit_n', type=int, default=16, help='Number of images in overfit subset')
-    parser.add_argument('--overfit_steps', type=int, default=3000, help='Number of optimizer steps for overfit run')
-    parser.add_argument('--overfit_t', type=float, default=0.8, help='Fixed timestep for overfit test')
-    parser.add_argument('--overfit_batch_size', type=int, default=16, help='Batch size for overfit run')
-    parser.add_argument('--overfit_print_freq', type=int, default=50, help='Print/log every N steps')
-    parser.add_argument('--overfit_use_ema', action='store_true', help='Update EMA during overfit (off by default)')
-    parser.add_argument('--overfit_save_imgs', action='store_true', help='Save reconstructions during overfit')
-    parser.add_argument('--overfit_img_freq', type=int, default=200, help='Save images every N steps')
-
     return parser
 
 
@@ -135,23 +124,11 @@ def _verify_checksum(name: str, tensors, device, global_rank: int):
     all_checksums = dist.allgather(checksum.unsqueeze(0))  # [world_size]
     max_diff = (all_checksums - all_checksums[0]).abs().max().item()
 
-    if global_rank == 0:
-        num_ranks = all_checksums.shape[0]
-        gpus_per_node = int(os.environ.get("GPUS_PER_NODE", "8"))
-        if max_diff == 0.0:
-            print(f"{name} checksum PASSED: all {num_ranks} ranks agree.")
-        else:
-            lines = []
-            for r, cs in enumerate(all_checksums.tolist()):
-                host_idx = r // gpus_per_node
-                local_gpu = r % gpus_per_node
-                marker = " <-- MISMATCH" if abs(cs - all_checksums[0].item()) > 0 else ""
-                lines.append(f"  rank {r:3d} (host {host_idx}, gpu {local_gpu}): {cs:.6e}{marker}")
-            raise RuntimeError(
-                f"{name} mismatch across ranks!\n"
-                f"  Max absolute diff: {max_diff:.6e}\n"
-                + "\n".join(lines)
-            )
+    passed = torch.tensor(1.0 if max_diff == 0.0 else 0.0, device=device)
+    dist.all_reduce(passed)
+    if passed.item() < dist.get_world_size():
+        raise RuntimeError(f"{name} checksum mismatch detected (max_diff={max_diff:.6e})")
+        
     dist.barrier()
 
 
@@ -172,6 +149,12 @@ def main(args):
 
     device = dist.get_local_rank()
     torch.cuda.set_device(device)
+    
+    if dist.get_rank() == 0:
+        client = U.Client(experiment="dbaranchuk/registers")
+        run = client.init_run(name=args.exp_name)
+    else:
+        run = None
 
     # Set seeds for reproducibility
     global_rank = dist.get_rank()
@@ -184,20 +167,13 @@ def main(args):
 
     num_tasks = dist.get_world_size()
 
-    # Set up TensorBoard logging (only on main process)
-    if global_rank == 0 and args.output_dir is not None:
-        os.makedirs(args.output_dir, exist_ok=True)
-        log_writer = SummaryWriter(log_dir=args.output_dir)
-    else:
-        log_writer = None
-
     # Data augmentation transforms
     if os.path.exists(args.data_path):
         transform_train = transforms.Compose([
-                            transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
-                            transforms.RandomHorizontalFlip(),
-                            transforms.PILToTensor()
-                            ])
+            transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
+            transforms.RandomHorizontalFlip(),
+            transforms.PILToTensor()
+            ])
         dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
         print(dataset_train)
 
@@ -286,7 +262,6 @@ def main(args):
     # Set up optimizer with weight decay adjustment for bias and norm layers
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
-    print(optimizer)
 
     if global_rank == 0 and 'optimizer' in checkpoint and 'epoch' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer'])
@@ -309,34 +284,20 @@ def main(args):
                    for v in group.values()]
     _verify_checksum("Optimizer state", opt_tensors, device, global_rank)
 
-    if global_rank == 0 and not checkpoint:
+    if dist.is_master() and not checkpoint:
         print("Training from scratch")
     del checkpoint
 
     # Evaluate generation
     if args.evaluate_gen:
-        print("Evaluating checkpoint at {} epoch".format(args.start_epoch))
-        with torch.random.fork_rng():
-            torch.manual_seed(seed)
-            with torch.no_grad():
-                evaluate(model_without_ddp, args, 0, batch_size=args.gen_bsz, log_writer=log_writer)
+        if dist.worker_host_idx() == 0:
+            print("Evaluating checkpoint at {} epoch".format(args.start_epoch))
+            with torch.random.fork_rng():
+                torch.manual_seed(seed)
+                evaluate(model_without_ddp, args, 0, batch_size=args.gen_bsz, run=run)
+        dist.barrier()
         return
-
-    # Toy overfit experiment
-    if args.overfit:
-        if dist.is_master():
-            print("Running OVERFIT experiment (tiny subset) ...")
-
-        run_overfit(
-            args=args,
-            model=model,
-            model_without_ddp=model_without_ddp,
-            optimizer=optimizer,
-            device=device,
-            log_writer=log_writer
-        )
-        return
-
+    
     # Training loop
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
@@ -344,29 +305,26 @@ def main(args):
         if num_tasks > 1 and os.path.exists(args.data_path):
             data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
+        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, run=run, args=args)
 
         # Save checkpoint periodically
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
-            misc.save_model(
-                args=args,
-                model_without_ddp=model_without_ddp,
-                optimizer=optimizer,
-                epoch=epoch,
-                epoch_name="last"
-            )
+            if dist.is_master():
+                misc.save_model(
+                    args=args,
+                    model_without_ddp=model_without_ddp,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    epoch_name="last"
+                )
 
         # Perform online evaluation at specified intervals
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
-            with torch.no_grad():
-                evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
-            if 'Dino' in args.model:
-                evaluate_linear_probing(model_without_ddp.net, args, device=device)
+            if dist.worker_host_idx() == 0:
+                evaluate(model_without_ddp, args, batch_size=args.gen_bsz, run=run)
             torch.cuda.empty_cache()
-
-        if dist.is_master() and log_writer is not None:
-            log_writer.flush()
+        dist.barrier()
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
