@@ -1,13 +1,11 @@
 import math
 import sys
 import os
-import shutil
 import numpy as np
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import cv2
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
@@ -15,7 +13,8 @@ import util.misc as misc
 import util.lr_sched as lr_sched
 import copy
 
-from util.fid import calculate_fid
+from util.fid import calculate_frechet_distance
+from util.inception import InceptionV3
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
@@ -32,13 +31,14 @@ def unpack_batch(batch, device, args):
     y = y.to(device, non_blocking=True)
     return x, y
 
-def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
+def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, run=None, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 20
 
+    accum_steps = getattr(args, 'accum_steps', 1)
     optimizer.zero_grad()
 
     if log_writer is not None:
@@ -46,8 +46,9 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
     print(len(data_loader))
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        # per iteration (instead of per epoch) lr scheduler
-        lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+        # Adjust LR once per optimizer step (every accum_steps data steps)
+        if data_iter_step % accum_steps == 0:
+            lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
         x, labels = unpack_batch(batch, device, args=args)
         labels = labels.to(device, non_blocking=True)
@@ -60,13 +61,16 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
             print("Loss is {}, stopping training".format(loss_value))
             sys.exit(1)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        torch.cuda.synchronize()
-
-        model_without_ddp.update_ema()
+        is_last_accum_step = (data_iter_step + 1) % accum_steps == 0
+        if is_last_accum_step:
+            (loss / accum_steps).backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            torch.cuda.synchronize()
+            model_without_ddp.update_ema()
+        else:
+            with model.no_sync():
+                (loss / accum_steps).backward()
 
         metric_logger.update(loss=loss_value)
         lr = optimizer.param_groups[0]["lr"]
@@ -80,31 +84,20 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
             if data_iter_step % args.log_freq == 0:
                 log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
                 log_writer.add_scalar('lr', lr, epoch_1000x)
+                if run is not None:
+                    run.log({"train_loss": loss_value_reduce, "lr": lr}, step=epoch_1000x)
 
         if data_iter_step >= len(data_loader):
             break
 
 
-def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
+def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, run=None):
 
     model_without_ddp.eval()
     world_size = misc.get_world_size()
     local_rank = misc.get_rank()
-    num_steps = args.num_images // (batch_size * world_size) + 1
 
-    # Construct the folder name for saving generated images.
-    save_folder = os.path.join(
-        args.output_dir,
-        "{}-steps{}-cfg{}-interval{}-{}-image{}-res{}".format(
-            model_without_ddp.method, model_without_ddp.steps, model_without_ddp.cfg_scale,
-            model_without_ddp.cfg_interval[0], model_without_ddp.cfg_interval[1], args.num_images, args.img_size
-        )
-    )
-    print("Save to:", save_folder)
-    if misc.get_rank() == 0 and not os.path.exists(save_folder):
-        os.makedirs(save_folder)
-
-    # switch to ema params, hard-coded to be the first one
+    # Switch to EMA params (hard-coded to first EMA)
     model_state_dict = copy.deepcopy(model_without_ddp.state_dict())
     ema_state_dict = copy.deepcopy(model_without_ddp.state_dict())
     for i, (name, _value) in enumerate(model_without_ddp.named_parameters()):
@@ -113,58 +106,88 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
     print("Switch to ema")
     model_without_ddp.load_state_dict(ema_state_dict)
 
-    # ensure that the number of images per class is equal.
+    # Each rank generates ceil(num_images / world_size) images so all ranks
+    # run the same number of steps (required for collective ops).
+    images_per_rank = math.ceil(args.num_images / world_size)
+    num_steps = math.ceil(images_per_rank / batch_size)
+
     class_num = args.class_num
     assert args.num_images % class_num == 0, "Number of images per class must be the same"
     class_label_gen_world = np.arange(0, class_num).repeat(args.num_images // class_num)
     class_label_gen_world = np.hstack([class_label_gen_world, np.zeros(50000)])
 
+    device = next(model_without_ddp.parameters()).device
+
+    # Load Inception on this rank for local feature extraction
+    block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+    inception_model = InceptionV3(
+        [block_idx], inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth'
+    ).to(device)
+    inception_model.eval()
+
+    local_acts = []
 
     for i in range(num_steps):
-        print("Generation step {}/{}".format(i, num_steps))
+        print("Generation step {}/{}".format(i + 1, num_steps))
 
         start_idx = world_size * batch_size * i + local_rank * batch_size
         end_idx = start_idx + batch_size
         labels_gen = class_label_gen_world[start_idx:end_idx]
-        labels_gen = torch.Tensor(labels_gen).long().cuda()
+        labels_gen = torch.Tensor(labels_gen).long().to(device)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             sampled_images = model_without_ddp.generate(labels_gen)
 
         torch.distributed.barrier()
 
-        # denormalize images 
+        # Denormalize to [0, 1] and extract Inception features
         sampled_images = (sampled_images + 1) / 2
-        sampled_images = sampled_images.detach().cpu()
+        sampled_images = sampled_images.clamp(0, 1).float()
 
-        # distributed save images
-        for b_id in range(sampled_images.size(0)):
-            img_id = i * sampled_images.size(0) * world_size + local_rank * sampled_images.size(0) + b_id
-            if img_id >= args.num_images:
-                break
-            gen_img = np.round(np.clip(sampled_images[b_id].numpy().transpose([1, 2, 0]) * 255, 0, 255))
-            gen_img = gen_img.astype(np.uint8)[:, :, ::-1]
-            cv2.imwrite(os.path.join(save_folder, '{}.png'.format(str(img_id).zfill(5))), gen_img)
+        with torch.no_grad():
+            pred = inception_model(sampled_images)[0]  # [B, 2048, 1, 1]
+            if pred.size(2) != 1 or pred.size(3) != 1:
+                pred = F.adaptive_avg_pool2d(pred, output_size=(1, 1))
+            pred = pred.squeeze(3).squeeze(2)  # [B, 2048]
+        local_acts.append(pred.cpu())
 
     torch.distributed.barrier()
 
-    # back to no ema
+    # Back to non-EMA params
     print("Switch back from ema")
     model_without_ddp.load_state_dict(model_state_dict)
+    del inception_model
 
-    # compute FID and IS
+    # Trim any excess from the last batch so all ranks have the same shape
+    local_acts = torch.cat(local_acts, dim=0)[:images_per_rank]  # [images_per_rank, 2048]
+
+    # Allgather activations from all ranks to all ranks
+    gathered = [torch.empty_like(local_acts.to(device)) for _ in range(world_size)]
+    torch.distributed.all_gather(gathered, local_acts.to(device))
+
+    # Only rank 0 computes statistics and logs FID
     if log_writer is not None:
-        if args.img_size == 256 or args.img_size == 224:
+        all_acts = torch.cat(gathered, dim=0)[:args.num_images].cpu().numpy()  # [num_images, 2048]
+
+        mu1 = np.mean(all_acts, axis=0)
+        sigma1 = np.cov(all_acts, rowvar=False)
+
+        if args.img_size in (224, 256):
             fid_statistics_file = 'fid_stats/jit_in256_stats.npz'
         elif args.img_size == 512:
             fid_statistics_file = 'fid_stats/jit_in512_stats.npz'
         else:
             raise NotImplementedError
-        fid = calculate_fid(save_folder, fid_statistics_file, inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth')
+
+        with np.load(fid_statistics_file) as f:
+            mu2, sigma2 = f['mu'][:], f['sigma'][:]
+
+        fid = calculate_frechet_distance(mu1, sigma1, mu2, sigma2)
         postfix = "_cfg{}_res{}".format(model_without_ddp.cfg_scale, args.img_size)
         log_writer.add_scalar('fid{}'.format(postfix), fid, epoch)
         print("FID: {:.4f}".format(fid))
-        shutil.rmtree(save_folder)
+        if run is not None:
+            run.log({"fid{}".format(postfix): fid}, step=epoch)
 
     torch.distributed.barrier()
 
