@@ -31,9 +31,9 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
-    print_freq = 20
+    print_freq = 40
 
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
     print(len(data_loader))
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
@@ -51,11 +51,9 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
             print("Loss is {}, stopping training".format(loss_value))
             sys.exit(1)
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-
-        torch.cuda.synchronize()
 
         model_without_ddp.update_ema()
 

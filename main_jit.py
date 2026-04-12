@@ -106,7 +106,7 @@ def get_args_parser():
                         help='Folder that contains checkpoint to resume from')
     parser.add_argument('--save_last_freq', type=int, default=5,
                         help='Frequency (in epochs) to save checkpoints')
-    parser.add_argument('--log_freq', default=100, type=int)
+    parser.add_argument('--log_freq', default=300, type=int)
     return parser
 
 
@@ -232,6 +232,7 @@ def main(args):
                      device, global_rank)
 
     model = DDP(model, device_ids=[device])
+    model = torch.compile(model) 
     model_without_ddp = model.module
 
     # Initialize EMA params on all ranks (from broadcast model params)
