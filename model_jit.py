@@ -231,7 +231,7 @@ class FinalLayer(nn.Module):
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
-    # @torch.compile
+    @torch.compile
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
         x = self.norm_final(x) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -259,7 +259,7 @@ class JiTBlock(nn.Module):
             self.adaLN_lora_B = nn.Linear(512, 6 * hidden_size, bias=False)
 
 
-    # @torch.compile
+    @torch.compile
     def forward(self, x,  c, feat_rope=None):
         h = self.adaLN_act(c)
         mod = self.adaLN_proj(h)
