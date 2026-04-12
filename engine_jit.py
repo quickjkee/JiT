@@ -33,7 +33,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 20
 
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
     print(len(data_loader))
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
@@ -51,11 +51,9 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
             print("Loss is {}, stopping training".format(loss_value))
             sys.exit(1)
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-
-        torch.cuda.synchronize()
 
         model_without_ddp.update_ema()
 
@@ -84,8 +82,6 @@ def evaluate(model_without_ddp, args, batch_size=32, run=None):
     local_rank = dist.get_local_rank()
     num_steps = args.num_images // (batch_size * local_world_size) + 1
     
-    print(local_rank, local_world_size, num_steps)
-
     # Construct the folder name for saving generated images.
     save_folder = os.path.join(
         args.output_dir,
