@@ -450,11 +450,15 @@ class JiT(nn.Module):
         x += self.pos_embed
 
         for i, block in enumerate(self.blocks):
-            # in-context
             if self.in_context_len > 0 and i >= self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens += self.in_context_posembs[i] 
-                x = torch.cat([in_context_tokens, x], dim=1)
+                in_context_tokens = in_context_tokens + self.in_context_posembs[i - self.in_context_start]
+
+                if i == self.in_context_start:
+                    x = torch.cat([in_context_tokens, x], dim=1)
+                else:
+                    x = torch.cat([in_context_tokens, x[:, self.in_context_len:]], dim=1)
+
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
