@@ -193,6 +193,9 @@ def main(args):
     else:
         data_loader_train = create_dataloader(args.yt_config_path, args.batch_size)
 
+    torch._dynamo.config.cache_size_limit = 128
+    torch._dynamo.config.optimize_ddp = False
+        
     # Create denoiser
     model = Denoiser(args)
 
@@ -232,7 +235,6 @@ def main(args):
                      device, global_rank)
 
     model = DDP(model, device_ids=[device])
-    model = torch.compile(model) 
     model_without_ddp = model.module
 
     # Initialize EMA params on all ranks (from broadcast model params)
