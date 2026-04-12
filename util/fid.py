@@ -97,12 +97,7 @@ def get_activations(images, model, batch_size=50, dims=2048, device='cpu', num_w
                'Setting batch size to data size'))
         batch_size = len(images)
 
-    dataset = ImageDataset(images, #transforms=TF.ToTensor())
-                            transforms=TF.Compose([
-                                TF.Resize(256, interpolation=TF.InterpolationMode.LANCZOS),
-                                TF.CenterCrop(256),
-                                TF.ToTensor()]
-                            ))
+    dataset = ImageDataset(images, transforms=TF.ToTensor())
     dataloader = torch.utils.data.DataLoader(dataset,
                                              batch_size=batch_size,
                                              shuffle=False,

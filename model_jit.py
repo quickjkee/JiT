@@ -150,7 +150,7 @@ class Attention(nn.Module):
         q = rope(self.q_norm(q))
         k = rope(self.k_norm(k))
 
-        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+        x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
         x = x.transpose(1, 2).reshape(B, N, C)
 
         x = self.proj(x)
