@@ -255,8 +255,8 @@ class JiTBlock(nn.Module):
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         if split_point > 0:
-            self.adaLN_lora_A = nn.Linear(hidden_size, 376, bias=False)
-            self.adaLN_lora_B = nn.Linear(376, 6 * hidden_size, bias=False)
+            self.adaLN_lora_A = nn.Linear(hidden_size, 128, bias=False)
+            self.adaLN_lora_B = nn.Linear(128, 6 * hidden_size, bias=False)
 
 
     @torch.compile
@@ -341,8 +341,12 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            torch.nn.init.normal_(self.in_context_posemb, std=.02)
+            self.in_context_posembs = nn.ParameterList()
+            
+            for _ in range(self.in_context_start, depth):
+                param = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+                torch.nn.init.normal_(param, std=.02)
+                self.in_context_posembs.append(param)
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
@@ -447,9 +451,9 @@ class JiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             # in-context
-            if self.in_context_len > 0 and i == self.in_context_start:
+            if self.in_context_len > 0 and i >= self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens += self.in_context_posemb
+                in_context_tokens += self.in_context_posembs[i] 
                 x = torch.cat([in_context_tokens, x], dim=1)
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
