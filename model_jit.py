@@ -113,17 +113,17 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-# def scaled_dot_product_attention(query, key, value, dropout_p=0.0) -> torch.Tensor:
-#     L, S = query.size(-2), key.size(-2)
-#     scale_factor = 1 / math.sqrt(query.size(-1))
-#     attn_bias = torch.zeros(query.size(0), 1, L, S, dtype=query.dtype).cuda()
+def scaled_dot_product_attention(query, key, value, dropout_p=0.0) -> torch.Tensor:
+    L, S = query.size(-2), key.size(-2)
+    scale_factor = 1 / math.sqrt(query.size(-1))
+    attn_bias = torch.zeros(query.size(0), 1, L, S, dtype=query.dtype).cuda()
 
-#     with torch.cuda.amp.autocast(enabled=False):
-#         attn_weight = query.float() @ key.float().transpose(-2, -1) * scale_factor
-#     attn_weight += attn_bias
-#     attn_weight = torch.softmax(attn_weight, dim=-1)
-#     attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
-#     return attn_weight @ value
+    with torch.cuda.amp.autocast(enabled=False):
+        attn_weight = query.float() @ key.float().transpose(-2, -1) * scale_factor
+    attn_weight += attn_bias
+    attn_weight = torch.softmax(attn_weight, dim=-1)
+    attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
+    return attn_weight @ value
 
 
 class Attention(nn.Module):
@@ -150,7 +150,7 @@ class Attention(nn.Module):
         q = rope(self.q_norm(q))
         k = rope(self.k_norm(k))
 
-        x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
         x = x.transpose(1, 2).reshape(B, N, C)
 
         x = self.proj(x)
