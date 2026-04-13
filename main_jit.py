@@ -20,6 +20,29 @@ from overfit_experiment import run_overfit
 from denoiser import Denoiser
 
 
+def mark_only_lora_as_trainable(model, train_bias=False):
+    # freeze everything
+    for p in model.parameters():
+        p.requires_grad = False
+
+    # unfreeze LoRA params only
+    for name, p in model.named_parameters():
+        is_lora = (
+            "lora_" in name or
+            "w3_lora_" in name
+        )
+        is_bias = train_bias and name.endswith(".bias")
+
+        if is_lora or is_bias:
+            p.requires_grad = True
+
+    # optional print
+    trainable = [name for name, p in model.named_parameters() if p.requires_grad]
+    print("Trainable params:")
+    for name in trainable:
+        print("  ", name)
+
+
 def get_args_parser():
     parser = argparse.ArgumentParser('JiT', add_help=False)
 
@@ -189,6 +212,9 @@ def main(args):
     # Create denoiser
     model = Denoiser(args)
 
+    # freeze pretrained params, train only LoRA
+    mark_only_lora_as_trainable(model, train_bias=False)
+
     print("Model =", model)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Number of trainable parameters: {:.6f}M".format(n_params / 1e6))
@@ -297,3 +323,6 @@ if __name__ == '__main__':
     args = get_args_parser().parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
+
+
+
