@@ -187,35 +187,45 @@ class SplitSwiGLUFFN(nn.Module):
         drop: float = 0.0,
         bias: bool = True,
         split_point: int = 0,
+        shared_w12_reg: nn.Module = None,
+        shared_w3_reg: nn.Module = None,
     ) -> None:
         super().__init__()
         hidden_dim = int(hidden_dim * 2 / 3)
 
         self.split_point = split_point
-
-        # shared
-        self.w12 = nn.Linear(dim, 2 * hidden_dim, bias=bias)
         self.ffn_dropout = nn.Dropout(drop)
 
-        # split output projection
-        self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
-        self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias) if split_point > 0 else None
+        if split_point > 0:
+            self.w12_reg = shared_w12_reg if shared_w12_reg is not None else nn.Linear(dim, 2 * hidden_dim, bias=bias)
+            self.w3_reg = shared_w3_reg if shared_w3_reg is not None else nn.Linear(hidden_dim, dim, bias=bias)
 
-    def forward(self, x):
-        x12 = self.w12(x)
+            self.w12_main = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+            self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
+        else:
+            self.w12_reg = None
+            self.w3_reg = None
+            self.w12_main = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+            self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
+
+    def forward_branch(self, x, w12, w3):
+        x12 = w12(x)
         x1, x2 = x12.chunk(2, dim=-1)
         hidden = F.silu(x1) * x2
         hidden = self.ffn_dropout(hidden)
+        return w3(hidden)
 
+    def forward(self, x):
         if self.split_point > 0:
-            h_reg = hidden[:, :self.split_point]
-            h_main = hidden[:, self.split_point:]
+            x_reg = x[:, :self.split_point]
+            x_main = x[:, self.split_point:]
 
-            y_reg = self.w3_reg(h_reg)
-            y_main = self.w3_main(h_main)
+            y_reg = self.forward_branch(x_reg, self.w12_reg, self.w3_reg)
+            y_main = self.forward_branch(x_main, self.w12_main, self.w3_main)
+
             return torch.cat([y_reg, y_main], dim=1)
 
-        return self.w3_main(hidden)
+        return self.forward_branch(x, self.w12_main, self.w3_main)
 
 
 class FinalLayer(nn.Module):
@@ -240,39 +250,64 @@ class FinalLayer(nn.Module):
 
 
 class JiTBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0, split_point=0):
+    def __init__(
+        self,
+        hidden_size,
+        num_heads,
+        mlp_ratio=4.0,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        split_point=0,
+        shared_mlp_w12_reg=None,
+        shared_mlp_w3_reg=None,
+        shared_adaLN_reg=None,
+    ):
         super().__init__()
 
         self.split_point = split_point
         self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                              attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
+        self.attn = Attention(
+            hidden_size,
+            num_heads=num_heads,
+            qkv_bias=True,
+            qk_norm=True,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            split_point=split_point
+        )
         self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
-            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
+        self.mlp = (
+            SplitSwiGLUFFN(
+                hidden_size,
+                mlp_hidden_dim,
+                drop=proj_drop,
+                split_point=split_point,
+                shared_w12_reg=shared_mlp_w12_reg,
+                shared_w3_reg=shared_mlp_w3_reg,
+            )
+            if split_point > 0 else
+            SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        )
 
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
-        if split_point > 0:
-            self.adaLN_lora_A = nn.Linear(hidden_size, 128, bias=False)
-            self.adaLN_lora_B = nn.Linear(128, 6 * hidden_size, bias=False)
-
+        self.adaLN_reg = shared_adaLN_reg if split_point > 0 and shared_adaLN_reg is not None \
+            else (nn.Linear(hidden_size, 6 * hidden_size, bias=True) if split_point > 0 else None)
 
     @torch.compile
-    def forward(self, x,  c, feat_rope=None):
+    def forward(self, x, c, feat_rope=None):
         h = self.adaLN_act(c)
         mod = self.adaLN_proj(h)
-        reg_mod = mod + self.adaLN_lora_B(self.adaLN_lora_A(h)) if self.split_point > 0 else None
+        reg_mod = self.adaLN_reg(h) if self.split_point > 0 else None
 
-        # Modulation splitting
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
         if reg_mod is not None:
             shift_msa_r, scale_msa_r, gate_msa_r, shift_mlp_r, scale_mlp_r, gate_mlp_r = split_mod(reg_mod)
         else:
             shift_msa_r = scale_msa_r = gate_msa_r = shift_mlp_r = scale_mlp_r = gate_mlp_r = None
-        
-        # Attn branch
+
         h = apply_mod(
             self.norm1(x),
             shift_msa, scale_msa,
@@ -283,7 +318,6 @@ class JiTBlock(nn.Module):
         h = apply_gate(h, gate_msa, gate_msa_r, self.split_point)
         x = x + h
 
-        # MLP branch                
         h = apply_mod(
             self.norm2(x),
             shift_mlp, scale_mlp,
@@ -341,12 +375,8 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            self.in_context_posembs = nn.ParameterList()
-            
-            for _ in range(self.in_context_start, depth):
-                param = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-                torch.nn.init.normal_(param, std=.02)
-                self.in_context_posembs.append(param)
+            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
@@ -367,11 +397,31 @@ class JiT(nn.Module):
             self.in_context_len if i >= self.in_context_start else 0
             for i in range(depth)
         ]
+
+        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        reg_hidden_dim = int(mlp_hidden_dim * 2 / 3)
+
+        if self.in_context_len > 0:
+            self.shared_mlp_w12_reg = nn.Linear(hidden_size, 2 * reg_hidden_dim, bias=True)
+            self.shared_mlp_w3_reg = nn.Linear(reg_hidden_dim, hidden_size, bias=True)
+            self.shared_adaLN_reg = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        else:
+            self.shared_mlp_w12_reg = None
+            self.shared_mlp_w3_reg = None
+            self.shared_adaLN_reg = None
+
         self.blocks = nn.ModuleList([
-            JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
-                     attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     split_point=split_points[i])
+            JiTBlock(
+                hidden_size,
+                num_heads,
+                mlp_ratio=mlp_ratio,
+                attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                split_point=split_points[i],
+                shared_mlp_w12_reg=self.shared_mlp_w12_reg if split_points[i] > 0 else None,
+                shared_mlp_w3_reg=self.shared_mlp_w3_reg if split_points[i] > 0 else None,
+                shared_adaLN_reg=self.shared_adaLN_reg if split_points[i] > 0 else None,
+            )
             for i in range(depth)
         ])
 
@@ -413,6 +463,10 @@ class JiT(nn.Module):
             if hasattr(block, "adaLN_lora_B"):
                 nn.init.constant_(block.adaLN_lora_B.weight, 0)
 
+        if self.shared_adaLN_reg is not None:
+            nn.init.constant_(self.shared_adaLN_reg.weight, 0)
+            nn.init.constant_(self.shared_adaLN_reg.bias, 0)
+
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
@@ -450,15 +504,11 @@ class JiT(nn.Module):
         x += self.pos_embed
 
         for i, block in enumerate(self.blocks):
-            if self.in_context_len > 0 and i >= self.in_context_start:
+            # in-context
+            if self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens = in_context_tokens + self.in_context_posembs[i - self.in_context_start]
-
-                if i == self.in_context_start:
-                    x = torch.cat([in_context_tokens, x], dim=1)
-                else:
-                    x = torch.cat([in_context_tokens, x[:, self.in_context_len:]], dim=1)
-
+                in_context_tokens += self.in_context_posemb
+                x = torch.cat([in_context_tokens, x], dim=1)
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
