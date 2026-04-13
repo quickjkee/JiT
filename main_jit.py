@@ -241,11 +241,11 @@ def main(args):
     checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
     if checkpoint_path and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
+        model_without_ddp.load_state_dict(checkpoint['model_ema1'], strict=False)
 
         model_without_ddp.ema_params1 = [p.detach().clone().cuda() for _, p in model_without_ddp.named_parameters()]
         model_without_ddp.ema_params2 = [p.detach().clone().cuda() for _, p in model_without_ddp.named_parameters()]
-        
+
         print("Resumed checkpoint from", args.resume)
 
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:
