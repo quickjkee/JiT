@@ -29,7 +29,8 @@ def mark_only_lora_as_trainable(model, train_bias=False):
     for name, p in model.named_parameters():
         is_lora = (
             "lora_" in name or
-            "w3_lora_" in name
+            "w3_lora_" in name or
+            "rms_weight_2" in name
         )
         is_bias = train_bias and name.endswith(".bias")
 
@@ -258,12 +259,20 @@ def main(args):
         print("Missing keys:", result.missing_keys)
         print("Unexpected keys:", result.unexpected_keys)
 
+        # Init rms_weight_2 from pretrained weight so register branch starts identical
+        for m in model_without_ddp.modules():
+            if hasattr(m, 'rms_weight_2') and hasattr(m, 'weight'):
+                m.rms_weight_2.data.copy_(m.weight.data)
+
         model_without_ddp.ema_params1 = [p.detach().clone().cuda() for _, p in model_without_ddp.named_parameters()]
         model_without_ddp.ema_params2 = [p.detach().clone().cuda() for _, p in model_without_ddp.named_parameters()]
 
         print("Resumed checkpoint from", args.resume)
 
-        if 'optimizer' in checkpoint and 'epoch' in checkpoint:
+        if not args.no_lora:
+            # For fine-tuning: skip old optimizer state (different param set) and start fresh
+            print("Fine-tuning mode: skipping pretrained optimizer state, starting from epoch 0")
+        elif 'optimizer' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
             args.start_epoch = checkpoint['epoch'] + 1
             print("Loaded optimizer & scaler state!")
