@@ -309,7 +309,8 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8
+        in_context_start=8,
+        no_split=False
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -354,7 +355,7 @@ class JiT(nn.Module):
 
         # transformer
         split_points = [
-            self.in_context_len if i >= self.in_context_start else 0
+            self.in_context_len if i >= self.in_context_start and not no_split else 0
             for i in range(depth)
         ]
         self.blocks = nn.ModuleList([

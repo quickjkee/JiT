@@ -150,6 +150,8 @@ def get_args_parser():
     parser.add_argument('--overfit_save_imgs', action='store_true', help='Save reconstructions during overfit')
     parser.add_argument('--overfit_img_freq', type=int, default=200, help='Save images every N steps')
 
+    # diagnostic
+    parser.add_argument('--no_lora', action='store_true', help='Disable LoRA freezing (train all params) for checkpoint sanity check')
 
     return parser
 
@@ -213,7 +215,10 @@ def main(args):
     model = Denoiser(args)
 
     # freeze pretrained params, train only LoRA
-    mark_only_lora_as_trainable(model, train_bias=False)
+    if not args.no_lora:
+        mark_only_lora_as_trainable(model, train_bias=False)
+    else:
+        print("LoRA disabled — all params trainable (checkpoint sanity check)")
 
     print("Model =", model)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -241,7 +246,17 @@ def main(args):
     checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
     if checkpoint_path and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model_ema1'], strict=False)
+        # Remap old checkpoint keys: blocks.X.adaLN_modulation.1.{weight,bias} -> blocks.X.adaLN_proj.{weight,bias}
+        ckpt_state = checkpoint['model_ema1']
+        remapped = {}
+        for k, v in ckpt_state.items():
+            new_k = k
+            if 'blocks.' in k and 'adaLN_modulation.1.' in k:
+                new_k = k.replace('adaLN_modulation.1.', 'adaLN_proj.')
+            remapped[new_k] = v
+        result = model_without_ddp.load_state_dict(remapped, strict=False)
+        print("Missing keys:", result.missing_keys)
+        print("Unexpected keys:", result.unexpected_keys)
 
         model_without_ddp.ema_params1 = [p.detach().clone().cuda() for _, p in model_without_ddp.named_parameters()]
         model_without_ddp.ema_params2 = [p.detach().clone().cuda() for _, p in model_without_ddp.named_parameters()]

@@ -156,7 +156,7 @@ class RMSNormSplit(nn.Module):
         super().__init__()
         self.eps1 = eps
         self.eps2 = eps
-        self.rms_weight_1 = nn.Parameter(torch.ones(hidden_size))
+        self.weight = nn.Parameter(torch.ones(hidden_size))
         self.rms_weight_2 = nn.Parameter(torch.ones(hidden_size))
         self.split_point = split_point
         self.seq_dim = seq_dim 
@@ -176,7 +176,7 @@ class RMSNormSplit(nn.Module):
             dim=self.seq_dim,
         )
 
-        x1 = self._rmsnorm(x1, self.rms_weight_1, self.eps1)
+        x1 = self._rmsnorm(x1, self.weight, self.eps1)
         x2 = self._rmsnorm(x2, self.rms_weight_2, self.eps2)
 
         return torch.cat([x2, x1], dim=self.seq_dim)
