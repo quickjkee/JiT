@@ -19,6 +19,28 @@ from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
 from overfit_experiment import run_overfit
 from denoiser import Denoiser
 
+def print_trainable(model):
+    total = 0
+    trainable = 0
+
+    for name, p in model.named_parameters():
+        n = p.numel()
+        total += n
+        if p.requires_grad:
+            trainable += n
+            status = "TRAIN"
+        else:
+            status = "FROZEN"
+
+        print(f"{status:6} | {name:60} | {n:>10}")
+
+    frozen = total - trainable
+    print("-" * 90)
+    print(f"Trainable params: {trainable:,}")
+    print(f"Frozen params:    {frozen:,}")
+    print(f"Total params:     {total:,}")
+    print(f"Trainable ratio:  {100 * trainable / total:.2f}%")
+
 
 def mark_only_lora_as_trainable(model, train_bias=False):
     # freeze everything
@@ -224,6 +246,8 @@ def main(args):
     print("Model =", model)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Number of trainable parameters: {:.6f}M".format(n_params / 1e6))
+
+    print_trainable(model.net)
 
     model.to(device)
 

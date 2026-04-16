@@ -61,7 +61,6 @@ class Denoiser(nn.Module):
                 in_context_start=args.in_context_start,
                 no_split=getattr(args, 'no_lora', False)
             )
-        print_trainable(self.net)
 
 
         self.img_size = args.img_size
