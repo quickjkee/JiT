@@ -193,29 +193,40 @@ class SplitSwiGLUFFN(nn.Module):
 
         self.split_point = split_point
 
-        # shared
-        self.w12 = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+        if split_point > 0:
+            # fully separated branches
+            self.w12_reg = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+            self.w12_main = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+
+            self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias)
+            self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
+        else:
+            # fallback: normal shared FFN
+            self.w12 = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+            self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
+            self.w12_reg = None
+            self.w3_reg = None
+
         self.ffn_dropout = nn.Dropout(drop)
 
-        # split output projection
-        self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
-        self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias) if split_point > 0 else None
-
-    def forward(self, x):
-        x12 = self.w12(x)
+    def _swiglu(self, x, w12, w3):
+        x12 = w12(x)
         x1, x2 = x12.chunk(2, dim=-1)
         hidden = F.silu(x1) * x2
         hidden = self.ffn_dropout(hidden)
+        return w3(hidden)
 
+    def forward(self, x):
         if self.split_point > 0:
-            h_reg = hidden[:, :self.split_point]
-            h_main = hidden[:, self.split_point:]
+            x_reg = x[:, :self.split_point]
+            x_main = x[:, self.split_point:]
 
-            y_reg = self.w3_reg(h_reg)
-            y_main = self.w3_main(h_main)
+            y_reg = self._swiglu(x_reg, self.w12_reg, self.w3_reg)
+            y_main = self._swiglu(x_main, self.w12_main, self.w3_main)
+
             return torch.cat([y_reg, y_main], dim=1)
 
-        return self.w3_main(hidden)
+        return self._swiglu(x, self.w12, self.w3_main)
 
 
 class FinalLayer(nn.Module):
@@ -255,8 +266,8 @@ class JiTBlock(nn.Module):
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         if split_point > 0:
-            self.adaLN_lora_A = nn.Linear(hidden_size, 512, bias=False)
-            self.adaLN_lora_B = nn.Linear(512, 6 * hidden_size, bias=False)
+            self.adaLN_lora_A = nn.Linear(hidden_size, 128, bias=False)
+            self.adaLN_lora_B = nn.Linear(128, 6 * hidden_size, bias=False)
 
 
     @torch.compile
