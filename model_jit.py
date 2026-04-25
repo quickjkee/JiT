@@ -366,7 +366,7 @@ class JiT(nn.Module):
 
 
 def JiT_B_16(**kwargs):
-    return JiT(depth=12, hidden_size=768, num_heads=12,
+    return JiT(depth=12, hidden_size=832, num_heads=13,
                bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=4,
 
 def JiT_B_32(**kwargs):
