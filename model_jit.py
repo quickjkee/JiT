@@ -366,19 +366,19 @@ class JiT(nn.Module):
 
 
 def JiT_B_16(**kwargs):
-    return JiT(depth=12, hidden_size=832, num_heads=13,
+    return JiT(depth=12, hidden_size=768, num_heads=12, mlp_ratio=5.27,
                bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=4,
 
 def JiT_B_32(**kwargs):
-    return JiT(depth=12, hidden_size=768, num_heads=12,
+    return JiT(depth=12, hidden_size=768, num_heads=12, mlp_ratio=5.27,
                bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=4,
 
 def JiT_L_16(**kwargs):
-    return JiT(depth=24, hidden_size=1024, num_heads=16,
+    return JiT(depth=24, hidden_size=1024, num_heads=16, mlp_ratio=5.17,
                bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=8,
 
 def JiT_L_32(**kwargs):
-    return JiT(depth=24, hidden_size=1024, num_heads=16,
+    return JiT(depth=24, hidden_size=1024, num_heads=16, mlp_ratio=5.17,
                bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=8,
 
 def JiT_H_16(**kwargs):
