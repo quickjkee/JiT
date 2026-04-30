@@ -120,14 +120,10 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, rope, y_len=0, attn_mask=None):
+    def forward(self, x, rope, attn_mask=None):
         B, N, C = x.shape
-
-        qkv = self.qkv(x).reshape(
-            B, N, 3, self.num_heads, C // self.num_heads
-        ).permute(2, 0, 3, 1, 4)
-
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         q = self.q_norm(q)
         k = self.k_norm(k)
@@ -135,20 +131,12 @@ class Attention(nn.Module):
         q = rope(q)
         k = rope(k)
 
-        x = scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=attn_mask,
-            dropout_p=self.attn_drop.p if self.training else 0.
-        )
+        x = scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=self.attn_drop.p if self.training else 0.)
 
         x = x.transpose(1, 2).reshape(B, N, C)
 
         x = self.proj(x)
         x = self.proj_drop(x)
-
-        if y_len > 0:
-            x = x[:, y_len:]
-
         return x
 
 
@@ -209,11 +197,9 @@ class JiTBlock(nn.Module):
         )
 
     @torch.compile
-    def forward(self, x, c, y, feat_rope=None, attn_mask=None):
+    def forward(self, x, c, feat_rope=None, attn_mask=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(torch.cat([y, x], dim=1) if y is not None else x), shift_msa, scale_msa),   
-                                                  y_len=y.shape[1] if y is not None else 0, 
-                                                  rope=feat_rope, attn_mask=attn_mask)
+        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope, attn_mask=attn_mask)
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
@@ -264,22 +250,10 @@ class JiT(nn.Module):
         if self.in_context_len > 0:
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
+            self.sink_token = nn.Parameter(torch.zeros(1, 1, hidden_size), requires_grad=True)
+            torch.nn.init.normal_(self.sink_token, std=.02)
 
         # rope
-        C = 2
-        T = num_patches
-        M = self.in_context_len
-
-        N = C + T
-        attn_mask = torch.zeros(1, 1, N, N)
-        attn_mask[:, :, :C, C:] = float("-inf")
-        self.register_buffer("attn_mask", attn_mask, persistent=False)
-
-        N_ctx = C + M + T
-        attn_mask_context = torch.zeros(1, 1, N_ctx, N_ctx)
-        attn_mask_context[:, :, :C, C:] = float("-inf")
-        self.register_buffer("attn_mask_context", attn_mask_context, persistent=False)
-
         half_head_dim = hidden_size // num_heads // 2
         hw_seq_len = input_size // patch_size
         self.feat_rope = VisionRotaryEmbeddingFast(
@@ -290,9 +264,8 @@ class JiT(nn.Module):
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=self.in_context_len + C
+            num_cls_token=self.in_context_len + 1
         )
-
 
         # transformer
         self.blocks = nn.ModuleList([
@@ -369,24 +342,32 @@ class JiT(nn.Module):
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
-        y = torch.cat([y_emb.unsqueeze(1), t_emb.unsqueeze(1)], dim=1)
 
         # forward JiT
         x = self.x_embedder(x)
         x += self.pos_embed
+
+        reg_mask = None
+        if self.in_context_len > 0:
+            R = self.in_context_len
+            S = 1
+            T = self.x_embedder.num_patches
+            N = R + S + T
+            reg_mask = x.new_zeros(1, 1, N, N)
+            reg_mask[:, :, :S, S:] = float('-inf')
 
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
-                x = torch.cat([in_context_tokens, x], dim=1)
+                sink = self.sink_token.expand(x.shape[0], -1, -1)
+                x = torch.cat([sink, in_context_tokens, x], dim=1)
+                
+            mask = reg_mask if i >= self.in_context_start else None
+            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext, attn_mask=mask)
 
-            mask = None if i < self.in_context_start else self.attn_mask_context
-            y_ = None if i < self.in_context_start else y
-            x = block(x, c, y_, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext, attn_mask=mask)
-
-        x = x[:, self.in_context_len:]
+        x = x[:, self.in_context_len + 1:]
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
