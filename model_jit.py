@@ -91,10 +91,12 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-def scaled_dot_product_attention(query, key, value, dropout_p=0.0) -> torch.Tensor:
+def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0) -> torch.Tensor:
     L, S = query.size(-2), key.size(-2)
     scale_factor = 1 / math.sqrt(query.size(-1))
     attn_bias = torch.zeros(query.size(0), 1, L, S, dtype=query.dtype).cuda()
+    if attn_mask is not None:
+        attn_bias = attn_bias + attn_mask
 
     with torch.cuda.amp.autocast(enabled=False):
         attn_weight = query.float() @ key.float().transpose(-2, -1) * scale_factor
@@ -118,7 +120,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, rope):
+    def forward(self, x, rope, attn_mask=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
@@ -129,7 +131,7 @@ class Attention(nn.Module):
         q = rope(q)
         k = rope(k)
 
-        x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+        x = scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=self.attn_drop.p if self.training else 0.)
 
         x = x.transpose(1, 2).reshape(B, N, C)
 
@@ -195,9 +197,9 @@ class JiTBlock(nn.Module):
         )
 
     @torch.compile
-    def forward(self, x,  c, feat_rope=None):
+    def forward(self, x, c, feat_rope=None, attn_mask=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope)
+        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope, attn_mask=attn_mask)
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
@@ -246,8 +248,6 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            #self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            #torch.nn.init.normal_(self.register_tokens, std=.02)
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
@@ -345,6 +345,14 @@ class JiT(nn.Module):
         x = self.x_embedder(x)
         x += self.pos_embed
 
+        reg_mask = None
+        if self.in_context_len > 0:
+            R = 31
+            S = 1
+            N = R + S + 256
+            reg_mask = x.new_zeros(1, 1, N, N)
+            reg_mask[:, :, :S, S:] = float('-inf')
+
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
@@ -352,10 +360,8 @@ class JiT(nn.Module):
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
                 
-                #register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                #x = torch.cat([register_tokens, x], dim=1)
-                
-            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
+            mask = reg_mask if i >= self.in_context_start else None
+            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext, attn_mask=mask)
 
         x = x[:, self.in_context_len:]
 
