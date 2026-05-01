@@ -287,7 +287,7 @@ class JiT(nn.Module):
         self.feat_rope = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=0
+            num_cls_token=C
         )
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
@@ -310,7 +310,7 @@ class JiT(nn.Module):
         # hz
         self.norm_y = nn.ModuleList([
                         RMSNorm(hidden_size, eps=1e-6)
-                        for _ in range(depth - self.in_context_start)
+                        for _ in range(depth)
                     ])
 
         self.initialize_weights()
@@ -391,8 +391,8 @@ class JiT(nn.Module):
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
 
-            mask = None if i < self.in_context_start else self.attn_mask_context
-            y_ = None if i < self.in_context_start else self.norm_y[i - self.in_context_start](y)
+            mask = self.attn_mask if i < self.in_context_start else self.attn_mask_context
+            y_ = self.norm_y[i](y)
             x = block(x, c, y_, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext, attn_mask=mask)
 
         x = x[:, self.in_context_len:]
