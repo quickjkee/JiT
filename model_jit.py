@@ -377,7 +377,7 @@ class JiT(nn.Module):
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
-        y = torch.stack([y_emb, t_emb], dim=1)          # [B, 2, C]
+        y = torch.stack([y_emb, y_emb], dim=1)          # [B, 2, C]
         y = y.repeat(1, 4, 1)                           # [B, 8, C]
 
         # forward JiT
