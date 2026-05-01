@@ -268,7 +268,7 @@ class JiT(nn.Module):
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
         # rope
-        C = 2
+        C = 8
         T = num_patches
         M = self.in_context_len
 
@@ -378,7 +378,7 @@ class JiT(nn.Module):
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
         y = torch.stack([y_emb, t_emb], dim=1)          # [B, 2, C]
-        y = y.repeat(1, 4, 1)                          # [B, 8, C]
+        y = y.repeat(1, 4, 1)                           # [B, 8, C]
 
         # forward JiT
         x = self.x_embedder(x)
