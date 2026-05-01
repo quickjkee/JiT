@@ -129,7 +129,7 @@ class Attention(nn.Module):
         q = rope(q)
         k = rope(k)
 
-        x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
 
         x = x.transpose(1, 2).reshape(B, N, C)
 
@@ -167,15 +167,10 @@ class FinalLayer(nn.Module):
         super().__init__()
         self.norm_final = RMSNorm(hidden_size)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
-        )
 
     @torch.compile
-    def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
-        x = modulate(self.norm_final(x), shift, scale)
+    def forward(self, x):
+        x = self.norm_final(x)
         x = self.linear(x)
         return x
 
@@ -189,16 +184,13 @@ class JiTBlock(nn.Module):
         self.norm2 = RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
-        )
+        self.attn_scale = nn.Parameter(torch.zeros(hidden_size))
+        self.mlp_scale = nn.Parameter(torch.zeros(hidden_size))
 
     @torch.compile
-    def forward(self, x,  c, feat_rope=None):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), rope=feat_rope)
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+    def forward(self, x, feat_rope=None):
+        x = x + self.attn(self.norm1(x), rope=feat_rope) * self.attn_scale
+        x = x + self.mlp(self.norm2(x)) * self.mlp_scale
         return x
 
 
@@ -220,6 +212,7 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
+        in_context_y=32,
         in_context_start=8
     ):
         super().__init__()
@@ -230,11 +223,13 @@ class JiT(nn.Module):
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.in_context_len = in_context_len
+        self.in_context_y = in_context_y
         self.in_context_start = in_context_start
         self.num_classes = num_classes
 
         # time and class embed
-        self.t_embedder = TimestepEmbedder(hidden_size)
+        if self.in_context_len - self.in_context_y > 0:
+            self.t_embedder = TimestepEmbedder(hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, hidden_size)
 
         # linear embed
@@ -245,11 +240,12 @@ class JiT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
         # in-context cls token
-        if self.in_context_len > 0:
-            self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            torch.nn.init.normal_(self.register_tokens, std=.02)
-            #self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            #torch.nn.init.normal_(self.in_context_posemb, std=.02)
+        self.in_context_label = nn.Parameter(torch.zeros(1, self.in_context_y, hidden_size), requires_grad=True)
+        torch.nn.init.normal_(self.in_context_label, std=.02)
+
+        if self.in_context_len - self.in_context_y > 0:
+            self.in_context_time = nn.Parameter(torch.zeros(1, self.in_context_len - self.in_context_y, hidden_size), requires_grad=True)
+            torch.nn.init.normal_(self.in_context_time, std=.02)
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
@@ -301,18 +297,11 @@ class JiT(nn.Module):
         # Initialize label embedding table:
         nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
 
-        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
-        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
-
-        # Zero-out adaLN modulation layers:
-        for block in self.blocks:
-            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
-            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+        if self.in_context_len - self.in_context_y > 0:
+            nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
+            nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
         # Zero-out output layers:
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
@@ -337,62 +326,70 @@ class JiT(nn.Module):
         y: (N,)
         """
         # class and time embeddings
-        t_emb = self.t_embedder(t)
+        if self.in_context_len - self.in_context_y > 0:
+            t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
-        c = t_emb + y_emb
 
         # forward JiT
         x = self.x_embedder(x)
         x += self.pos_embed
 
         for i, block in enumerate(self.blocks):
-            # in-context
-            if self.in_context_len > 0 and i == self.in_context_start:
-                #in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                #in_context_tokens += self.in_context_posemb
-                #x = torch.cat([in_context_tokens, x], dim=1)
+            if i == self.in_context_start:
+                in_context_y = y_emb.unsqueeze(1).repeat(1, self.in_context_y, 1)
+                in_context_y += self.in_context_label
+                if self.in_context_len - self.in_context_y > 0:
+                    in_context_t = t_emb.unsqueeze(1).repeat(1, self.in_context_len - self.in_context_y, 1)
+                    in_context_t += self.in_context_time
                 
-                register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                x = torch.cat([register_tokens, x], dim=1)
-                
-            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
+                if self.in_context_len - self.in_context_y > 0:
+                    x = torch.cat([in_context_y, in_context_t, x], dim=1)
+                else:
+                    x = torch.cat([in_context_y, x], dim=1)
+
+            x = block(x, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
 
-        x = self.final_layer(x, c)
+        x = self.final_layer(x)
         output = self.unpatchify(x, self.patch_size)
 
         return output
 
 
 def JiT_B_16(**kwargs):
-    return JiT(depth=12, hidden_size=768, num_heads=12, #mlp_ratio=5.27,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=4,
+    return JiT(depth=12, hidden_size=768, num_heads=12,
+               bottleneck_dim=128, in_context_len=32, patch_size=16, **kwargs)
 
 def JiT_B_32(**kwargs):
-    return JiT(depth=12, hidden_size=768, num_heads=12, #mlp_ratio=5.27,
-               bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=4,
+    return JiT(depth=12, hidden_size=768, num_heads=12,
+               bottleneck_dim=128, in_context_len=32, in_context_start=4, patch_size=32, **kwargs)
+
+def JiT_M_16(**kwargs):
+    return JiT(depth=12, hidden_size=928, num_heads=16,
+               bottleneck_dim=128, in_context_len=32, patch_size=16, **kwargs)
 
 def JiT_L_16(**kwargs):
-    return JiT(depth=24, hidden_size=1024, num_heads=16, #mlp_ratio=5.17,
-               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=8,
+    return JiT(depth=24, hidden_size=1024, num_heads=16,
+               bottleneck_dim=128, in_context_len=32, patch_size=16, **kwargs)
 
 def JiT_L_32(**kwargs):
-    return JiT(depth=24, hidden_size=1024, num_heads=16, #mlp_ratio=5.17,
-               bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=8,
+    return JiT(depth=24, hidden_size=1024, num_heads=16,
+               bottleneck_dim=128, in_context_len=32, in_context_start=8, patch_size=32, **kwargs)
 
 def JiT_H_16(**kwargs):
     return JiT(depth=32, hidden_size=1280, num_heads=16,
-               bottleneck_dim=256, patch_size=16, **kwargs) # in_context_len=32, in_context_start=10,
+               bottleneck_dim=256, in_context_len=32, in_context_start=10, patch_size=16, **kwargs)
 
 def JiT_H_32(**kwargs):
     return JiT(depth=32, hidden_size=1280, num_heads=16,
-               bottleneck_dim=256, patch_size=32, **kwargs) # in_context_len=32, in_context_start=10,
+               bottleneck_dim=256, in_context_len=32, in_context_start=10, patch_size=32, **kwargs)
 
 
 JiT_models = {
     'JiT-B/16': JiT_B_16,
     'JiT-B/32': JiT_B_32,
+    'JiT-M/16': JiT_M_16,
     'JiT-L/16': JiT_L_16,
     'JiT-L/32': JiT_L_32,
     'JiT-H/16': JiT_H_16,
