@@ -211,10 +211,12 @@ class JiTBlock(nn.Module):
     @torch.compile
     def forward(self, x, c, y, feat_rope=None, attn_mask=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(torch.cat([y, x], dim=1) if y is not None else x), shift_msa, scale_msa),   
+        attn_input = torch.cat([y, modulate(self.norm1(x), shift_msa, scale_msa)], dim=1) if y is not None else modulate(self.norm1(x), shift_msa, scale_msa)
+        x = x + gate_msa.unsqueeze(1) * self.attn(attn_input,   
                                                   y_len=y.shape[1] if y is not None else 0, 
                                                   rope=feat_rope, attn_mask=attn_mask)
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+
         return x
 
 
@@ -375,10 +377,8 @@ class JiT(nn.Module):
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
-        y = torch.cat([
-                        y_emb.unsqueeze(1).repeat(1, 4, 1),
-                        t_emb.unsqueeze(1).repeat(1, 4, 1)
-                    ], dim=1)
+        y = torch.stack([y_emb, t_emb], dim=1)          # [B, 2, C]
+        y = y.repeat(1, 4, 1)                          # [B, 8, C]
 
         # forward JiT
         x = self.x_embedder(x)
