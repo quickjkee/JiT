@@ -7,11 +7,20 @@ import torch
 import torch.nn as nn
 import math
 import torch.nn.functional as F
-from util.model_util import VisionRotaryEmbeddingFast, get_2d_sincos_pos_embed, RMSNorm
+from util.model_util import VisionRotaryEmbeddingFast, get_2d_sincos_pos_embed, RMSNorm, RMSNormSplit
 
 
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+def apply_scale(x, scale, scale_r=None, split_point=0):
+    if split_point <= 0:
+        return x * scale
+
+    x_reg = x[:, :split_point]
+    x_main = x[:, split_point:]
+
+    x_reg = x_reg * scale_r
+    x_main = x_main * scale
+
+    return torch.cat([x_reg, x_main], dim=1)
 
 
 class BottleneckPatchEmbed(nn.Module):
@@ -105,35 +114,72 @@ def scaled_dot_product_attention(query, key, value, dropout_p=0.0) -> torch.Tens
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, split_point, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.num_heads = num_heads
-        head_dim = dim // num_heads
+        self.split_point = split_point
+        self.head_dim = dim // num_heads
 
-        self.q_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
-        self.k_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
+        self.q_norm = RMSNormSplit(self.head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(self.head_dim, eps=1e-6)
+        self.k_norm = RMSNormSplit(self.head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(self.head_dim, eps=1e-6)
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.qkv_main = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.proj_main = nn.Linear(dim, dim)
+
+        if split_point > 0:
+            self.qkv_reg = nn.Linear(dim, dim * 3, bias=qkv_bias)
+            self.proj_reg = nn.Linear(dim, dim)
+        else:
+            self.qkv_reg = None
+            self.proj_reg = None
+
         self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+
+    def _qkv(self, x, layer):
+        B, N, C = x.shape
+        qkv = layer(x).reshape(B, N, 3, self.num_heads, self.head_dim)
+        return qkv.permute(2, 0, 3, 1, 4)
 
     def forward(self, x, rope):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        if self.split_point > 0:
+            x_reg = x[:, :self.split_point]
+            x_main = x[:, self.split_point:]
 
-        q = rope(q)
-        k = rope(k)
+            qkv_reg = self._qkv(x_reg, self.qkv_reg)
+            qkv_main = self._qkv(x_main, self.qkv_main)
 
-        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+            qkv = torch.cat([qkv_reg, qkv_main], dim=3)
+        else:
+            qkv = self._qkv(x, self.qkv_main)
+
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        q = rope(self.q_norm(q))
+        k = rope(self.k_norm(k))
+
+        x = scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+        )
 
         x = x.transpose(1, 2).reshape(B, N, C)
 
-        x = self.proj(x)
+        if self.split_point > 0:
+            x_reg = x[:, :self.split_point]
+            x_main = x[:, self.split_point:]
+
+            x_reg = self.proj_reg(x_reg)
+            x_main = self.proj_main(x_main)
+
+            x = torch.cat([x_reg, x_main], dim=1)
+        else:
+            x = self.proj_main(x)
+
         x = self.proj_drop(x)
         return x
 
@@ -159,6 +205,52 @@ class SwiGLUFFN(nn.Module):
         return self.w3(self.ffn_dropout(hidden))
 
 
+class SwiGLUFFNSplit(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        drop: float = 0.0,
+        bias: bool = True,
+        split_point: int = 0,
+    ) -> None:
+        super().__init__()
+        hidden_dim = int(hidden_dim * 2 / 3)
+
+        self.split_point = split_point
+
+        self.w12_main = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+        self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
+
+        if split_point > 0:
+            self.w12_reg = nn.Linear(dim, 2 * hidden_dim, bias=bias)
+            self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias)
+        else:
+            self.w12_reg = None
+            self.w3_reg = None
+
+        self.ffn_dropout = nn.Dropout(drop)
+
+    def _ffn(self, x, w12, w3):
+        x12 = w12(x)
+        x1, x2 = x12.chunk(2, dim=-1)
+        hidden = F.silu(x1) * x2
+        hidden = self.ffn_dropout(hidden)
+        return w3(hidden)
+
+    def forward(self, x):
+        if self.split_point > 0:
+            x_reg = x[:, :self.split_point]
+            x_main = x[:, self.split_point:]
+
+            y_reg = self._ffn(x_reg, self.w12_reg, self.w3_reg)
+            y_main = self._ffn(x_main, self.w12_main, self.w3_main)
+
+            return torch.cat([y_reg, y_main], dim=1)
+
+        return self._ffn(x, self.w12_main, self.w3_main)
+
+
 class FinalLayer(nn.Module):
     """
     The final layer of JiT.
@@ -176,21 +268,39 @@ class FinalLayer(nn.Module):
 
 
 class JiTBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0, split_point=0):
         super().__init__()
-        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
+
+        self.split_point = split_point
+
+        self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+        self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                              attn_drop=attn_drop, proj_drop=proj_drop)
-        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
+                              attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
+
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
-        #self.attn_scale = nn.Parameter(torch.zeros(hidden_size))
-        #self.mlp_scale = nn.Parameter(torch.zeros(hidden_size))
+        self.mlp = SwiGLUFFNSplit(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
+            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+
+        self.attn_scale = nn.Parameter(torch.zeros(hidden_size))
+        self.mlp_scale = nn.Parameter(torch.zeros(hidden_size))
+
+        if split_point > 0:
+            self.attn_scale_r = nn.Parameter(torch.zeros(hidden_size))
+            self.mlp_scale_r = nn.Parameter(torch.zeros(hidden_size))
+        else:
+            self.attn_scale_r = None
+            self.mlp_scale_r = None
 
     @torch.compile
     def forward(self, x, feat_rope=None):
-        x = x + self.attn(self.norm1(x), rope=feat_rope) # * self.attn_scale
-        x = x + self.mlp(self.norm2(x)) # * self.mlp_scale
+        h = self.attn(self.norm1(x), rope=feat_rope)
+        x = x + apply_scale(h, self.attn_scale, self.attn_scale_r, self.split_point)
+
+        h = self.mlp(self.norm2(x))
+        x = x + apply_scale(h, self.mlp_scale, self.mlp_scale_r, self.split_point)
+
         return x
 
 
@@ -262,10 +372,15 @@ class JiT(nn.Module):
         )
 
         # transformer
+        split_points = [
+            self.in_context_len if i >= self.in_context_start else 0
+            for i in range(depth)
+        ]
         self.blocks = nn.ModuleList([
             JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
                      attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
+                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                     split_point=split_points[i])
             for i in range(depth)
         ])
 
@@ -366,7 +481,7 @@ def JiT_B_32(**kwargs):
                bottleneck_dim=128, in_context_len=32, in_context_start=4, patch_size=32, **kwargs)
 
 def JiT_M_16(**kwargs):
-    return JiT(depth=18, hidden_size=768, num_heads=12,
+    return JiT(depth=12, hidden_size=768, num_heads=12,
                bottleneck_dim=128, patch_size=16, **kwargs)
 
 def JiT_L_16(**kwargs):

@@ -151,6 +151,37 @@ class RMSNorm(nn.Module):
         return (self.weight * hidden_states).to(input_dtype)
 
 
+class RMSNormSplit(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6, split_point=1, seq_dim=1):
+        super().__init__()
+        self.eps1 = eps
+        self.eps2 = eps
+        self.rms_weight_1 = nn.Parameter(torch.ones(hidden_size))
+        self.rms_weight_2 = nn.Parameter(torch.ones(hidden_size))
+        self.split_point = split_point
+        self.seq_dim = seq_dim 
+
+    def _rmsnorm(self, x, weight, eps):
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        x = x * torch.rsqrt(variance + eps)
+        x = x * weight
+        return x.to(input_dtype)
+
+    def forward(self, hidden_states):
+        x2, x1 = torch.split(
+            hidden_states,
+            [self.split_point, hidden_states.size(self.seq_dim) - self.split_point],
+            dim=self.seq_dim,
+        )
+
+        x1 = self._rmsnorm(x1, self.rms_weight_1, self.eps1)
+        x2 = self._rmsnorm(x2, self.rms_weight_2, self.eps2)
+
+        return torch.cat([x2, x1], dim=self.seq_dim)
+
+
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0):
     """
     grid_size: int of the grid height and width
