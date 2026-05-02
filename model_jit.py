@@ -184,13 +184,13 @@ class JiTBlock(nn.Module):
         self.norm2 = RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
-        self.attn_scale = nn.Parameter(torch.zeros(hidden_size))
-        self.mlp_scale = nn.Parameter(torch.zeros(hidden_size))
+        #self.attn_scale = nn.Parameter(torch.zeros(hidden_size))
+        #self.mlp_scale = nn.Parameter(torch.zeros(hidden_size))
 
     @torch.compile
     def forward(self, x, feat_rope=None):
-        x = x + self.attn(self.norm1(x), rope=feat_rope) * self.attn_scale
-        x = x + self.mlp(self.norm2(x)) * self.mlp_scale
+        x = x + self.attn(self.norm1(x), rope=feat_rope) # * self.attn_scale
+        x = x + self.mlp(self.norm2(x)) # * self.mlp_scale
         return x
 
 
