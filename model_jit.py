@@ -126,14 +126,12 @@ class Attention(nn.Module):
             if split_point > 0 else RMSNorm(self.head_dim, eps=1e-6)
 
         self.qkv_main = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.proj_main = nn.Linear(dim, dim)
+        self.proj = nn.Linear(dim, dim)
 
         if split_point > 0:
             self.qkv_reg = nn.Linear(dim, dim * 3, bias=qkv_bias)
-            self.proj_reg = nn.Linear(dim, dim)
         else:
             self.qkv_reg = None
-            self.proj_reg = None
 
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -168,17 +166,7 @@ class Attention(nn.Module):
         )
 
         x = x.transpose(1, 2).reshape(B, N, C)
-
-        if self.split_point > 0:
-            x_reg = x[:, :self.split_point]
-            x_main = x[:, self.split_point:]
-
-            x_reg = self.proj_reg(x_reg)
-            x_main = self.proj_main(x_main)
-
-            x = torch.cat([x_reg, x_main], dim=1)
-        else:
-            x = self.proj_main(x)
+        x = self.proj(x)
 
         x = self.proj_drop(x)
         return x
@@ -268,7 +256,7 @@ class FinalLayer(nn.Module):
 
 
 class JiTBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0, split_point=0):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0, split_point=0, last_block=False):
         super().__init__()
 
         self.split_point = split_point
@@ -280,15 +268,15 @@ class JiTBlock(nn.Module):
                               attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLUFFNSplit(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
-            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        self.mlp = SwiGLUFFNSplit(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) \
+            if split_point > 0 and not last_block else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
 
         self.attn_scale = nn.Parameter(torch.zeros(hidden_size))
         self.mlp_scale = nn.Parameter(torch.zeros(hidden_size))
 
         if split_point > 0:
-            self.attn_scale_r = nn.Parameter(torch.zeros(hidden_size))
-            self.mlp_scale_r = nn.Parameter(torch.zeros(hidden_size))
+            self.attn_scale_r = torch.ones(hidden_size)
+            self.mlp_scale_r = torch.ones(hidden_size)
         else:
             self.attn_scale_r = None
             self.mlp_scale_r = None
@@ -380,7 +368,7 @@ class JiT(nn.Module):
             JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
                      attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
                      proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     split_point=split_points[i])
+                     split_point=split_points[i], last_block=True if i == depth - 1 else False)
             for i in range(depth)
         ])
 
