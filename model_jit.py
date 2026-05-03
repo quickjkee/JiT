@@ -275,8 +275,8 @@ class JiTBlock(nn.Module):
         self.mlp_scale = nn.Parameter(torch.zeros(hidden_size))
 
         if split_point > 0:
-            self.attn_scale_r = torch.ones(hidden_size)
-            self.mlp_scale_r = torch.ones(hidden_size)
+            self.register_buffer("attn_scale_r", torch.ones(hidden_size))
+            self.register_buffer("mlp_scale_r", torch.ones(hidden_size))
         else:
             self.attn_scale_r = None
             self.mlp_scale_r = None
