@@ -204,39 +204,36 @@ class SwiGLUFFNSplit(nn.Module):
     ) -> None:
         super().__init__()
         hidden_dim = int(hidden_dim * 2 / 3)
-
         self.split_point = split_point
 
+        # split expansion
         self.w12_main = nn.Linear(dim, 2 * hidden_dim, bias=bias)
-        self.w3_main = nn.Linear(hidden_dim, dim, bias=bias)
+        self.w12_reg = nn.Linear(dim, 2 * hidden_dim, bias=bias) if split_point > 0 else None
 
-        if split_point > 0:
-            self.w12_reg = nn.Linear(dim, 2 * hidden_dim, bias=bias)
-            self.w3_reg = nn.Linear(hidden_dim, dim, bias=bias)
-        else:
-            self.w12_reg = None
-            self.w3_reg = None
+        # shared output projection
+        self.w3 = nn.Linear(hidden_dim, dim, bias=bias)
 
         self.ffn_dropout = nn.Dropout(drop)
 
-    def _ffn(self, x, w12, w3):
+    def _hidden(self, x, w12):
         x12 = w12(x)
         x1, x2 = x12.chunk(2, dim=-1)
         hidden = F.silu(x1) * x2
-        hidden = self.ffn_dropout(hidden)
-        return w3(hidden)
+        return self.ffn_dropout(hidden)
 
     def forward(self, x):
         if self.split_point > 0:
             x_reg = x[:, :self.split_point]
             x_main = x[:, self.split_point:]
 
-            y_reg = self._ffn(x_reg, self.w12_reg, self.w3_reg)
-            y_main = self._ffn(x_main, self.w12_main, self.w3_main)
+            h_reg = self._hidden(x_reg, self.w12_reg)
+            h_main = self._hidden(x_main, self.w12_main)
 
-            return torch.cat([y_reg, y_main], dim=1)
+            h = torch.cat([h_reg, h_main], dim=1)
+        else:
+            h = self._hidden(x, self.w12_main)
 
-        return self._ffn(x, self.w12_main, self.w3_main)
+        return self.w3(h)
 
 
 class FinalLayer(nn.Module):
