@@ -130,65 +130,28 @@ class Attention(nn.Module):
     def __init__(self, dim, split_point, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.num_heads = num_heads
-        self.split_point = split_point
-        self.head_dim = dim // num_heads
+        head_dim = dim // num_heads
 
-        self.q_norm = RMSNormSplit(self.head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
-            if split_point > 0 else RMSNorm(self.head_dim, eps=1e-6)
-        self.k_norm = RMSNormSplit(self.head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
-            if split_point > 0 else RMSNorm(self.head_dim, eps=1e-6)
+        self.q_norm = RMSNorm(head_dim, eps=1e-6)
+        self.k_norm = RMSNorm(head_dim, eps=1e-6)
 
-        self.qkv_main = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.proj_main = nn.Linear(dim, dim)
-
-        if split_point > 0:
-            self.qkv_reg = nn.Linear(dim, dim * 3, bias=qkv_bias)
-            self.proj_reg = nn.Linear(dim, dim)
-        else:
-            self.qkv_reg = None
-            self.proj_reg = None
-
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-
-    def _qkv(self, x, layer):
-        B, N, C = x.shape
-        qkv = layer(x).reshape(B, N, 3, self.num_heads, self.head_dim)
-        return qkv.permute(2, 0, 3, 1, 4)
 
     def forward(self, x, rope):
         B, N, C = x.shape
-
-        if self.split_point > 0:
-            x_reg = x[:, :self.split_point]
-            x_main = x[:, self.split_point:]
-
-            qkv_reg = self._qkv(x_reg, self.qkv_reg)
-            qkv_main = self._qkv(x_main, self.qkv_main)
-
-            qkv = torch.cat([qkv_reg, qkv_main], dim=3)
-        else:
-            qkv = self._qkv(x, self.qkv_main)
-
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         q = rope(self.q_norm(q))
         k = rope(self.k_norm(k))
 
-        x = scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.attn_drop.p if self.training else 0.0,
-        )
-
+        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
         x = x.transpose(1, 2).reshape(B, N, C)
 
-        if self.split_point > 0:
-            x_reg = self.proj_reg(x[:, :self.split_point])
-            x_main = self.proj_main(x[:, self.split_point:])
-            x = torch.cat([x_reg, x_main], dim=1)
-        else:
-            x = self.proj_main(x)
-
+        x = self.proj(x)
         x = self.proj_drop(x)
         return x
 
@@ -279,32 +242,27 @@ class JiTBlock(nn.Module):
         super().__init__()
 
         self.split_point = split_point
-        self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
                               attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
-        self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
 
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
-        if split_point > 0:
-            self.adaLN_lora_A = nn.Linear(hidden_size, 128, bias=False)
-            self.adaLN_lora_B = nn.Linear(128, 6 * hidden_size, bias=False)
 
 
     @torch.compile
     def forward(self, x,  c, feat_rope=None):
         h = self.adaLN_act(c)
         mod = self.adaLN_proj(h)
-        reg_mod = mod + self.adaLN_lora_B(self.adaLN_lora_A(h)) if self.split_point > 0 else None
 
         # Modulation splitting
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
         if self.split_point > 0:
-            #shift_msa_r = scale_msa_r = shift_mlp_r = scale_mlp_r = torch.zeros_like(shift_msa)
-            #gate_msa_r = gate_mlp_r = torch.ones_like(gate_mlp)
-            shift_msa_r, scale_msa_r, gate_msa_r, shift_mlp_r, scale_mlp_r, gate_mlp_r = split_mod(reg_mod)
+            shift_msa_r = scale_msa_r = shift_mlp_r = scale_mlp_r = torch.zeros_like(shift_msa)
+            gate_msa_r = gate_mlp_r = torch.ones_like(gate_mlp)
         else:
             shift_msa_r = scale_msa_r = gate_msa_r = shift_mlp_r = scale_mlp_r = gate_mlp_r = None
         
@@ -326,7 +284,6 @@ class JiTBlock(nn.Module):
             shift_mlp_r, scale_mlp_r,
             self.split_point
         )
-        
         h = self.mlp(h)
         h = apply_gate(h, gate_mlp, gate_mlp_r, self.split_point)
         x = x + h
