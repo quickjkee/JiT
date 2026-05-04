@@ -285,7 +285,7 @@ class JiTBlock(nn.Module):
             self.split_point
         )
         if self.split_point > 0:
-            h_reg = h[:, :self.split_point]
+            h_reg = torch.zeros_like(h[:, :self.split_point])
             h_main = h[:, self.split_point:]
 
             h_main = self.mlp(h_main)
