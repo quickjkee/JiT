@@ -132,8 +132,10 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
 
-        self.q_norm = RMSNorm(head_dim, eps=1e-6)
-        self.k_norm = RMSNorm(head_dim, eps=1e-6)
+        self.q_norm = RMSNormSplit(head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(head_dim, eps=1e-6)
+        self.k_norm = RMSNormSplit(head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(head_dim, eps=1e-6)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -242,12 +244,13 @@ class JiTBlock(nn.Module):
         super().__init__()
 
         self.split_point = split_point
-        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
                               attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
-        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
+        self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) \
+                if split_point > 0 else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
 
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
@@ -284,14 +287,8 @@ class JiTBlock(nn.Module):
             shift_mlp_r, scale_mlp_r,
             self.split_point
         )
-        if self.split_point > 0:
-            h_reg = torch.zeros_like(h[:, :self.split_point])
-            h_main = h[:, self.split_point:]
-
-            h_main = self.mlp(h_main)
-            h = torch.cat([h_reg, h_main], dim=1)
-        else:
-            h = self.mlp(h)
+        
+        h = self.mlp(h)
         h = apply_gate(h, gate_mlp, gate_mlp_r, self.split_point)
         x = x + h
 
