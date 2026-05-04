@@ -284,7 +284,14 @@ class JiTBlock(nn.Module):
             shift_mlp_r, scale_mlp_r,
             self.split_point
         )
-        h = self.mlp(h)
+        if self.split_point > 0:
+            h_reg = h[:, :self.split_point]
+            h_main = h[:, self.split_point:]
+
+            h_main = self.mlp(h_main)
+            h = torch.cat([h_reg, h_main], dim=1)
+        else:
+            h = self.mlp(h)
         h = apply_gate(h, gate_mlp, gate_mlp_r, self.split_point)
         x = x + h
 
