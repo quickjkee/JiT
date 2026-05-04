@@ -294,13 +294,14 @@ class JiTBlock(nn.Module):
     def forward(self, x,  c, feat_rope=None):
         h = self.adaLN_act(c)
         mod = self.adaLN_proj(h)
+        reg_mod = mod + self.adaLN_lora_B(self.adaLN_lora_A(h)) if self.split_point > 0 else None
 
         # Modulation splitting
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
         if self.split_point > 0:
             #shift_msa_r = scale_msa_r = shift_mlp_r = scale_mlp_r = torch.zeros_like(shift_msa)
             #gate_msa_r = gate_mlp_r = torch.ones_like(gate_mlp)
-            shift_msa_r, scale_msa_r, gate_msa_r, shift_mlp_r, scale_mlp_r, gate_mlp_r = split_mod(mod)
+            shift_msa_r, scale_msa_r, gate_msa_r, shift_mlp_r, scale_mlp_r, gate_mlp_r = split_mod(reg_mod)
         else:
             shift_msa_r = scale_msa_r = gate_msa_r = shift_mlp_r = scale_mlp_r = gate_mlp_r = None
         
