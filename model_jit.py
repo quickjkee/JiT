@@ -130,65 +130,30 @@ class Attention(nn.Module):
     def __init__(self, dim, split_point, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.num_heads = num_heads
-        self.split_point = split_point
-        self.head_dim = dim // num_heads
+        head_dim = dim // num_heads
 
-        self.q_norm = RMSNormSplit(self.head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
-            if split_point > 0 else RMSNorm(self.head_dim, eps=1e-6)
-        self.k_norm = RMSNormSplit(self.head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
-            if split_point > 0 else RMSNorm(self.head_dim, eps=1e-6)
+        self.q_norm = RMSNormSplit(head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(head_dim, eps=1e-6)
+        self.k_norm = RMSNormSplit(head_dim, eps=1e-6, split_point=split_point, seq_dim=2) \
+            if split_point > 0 else RMSNorm(head_dim, eps=1e-6)
 
-        self.qkv_main = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.proj_main = nn.Linear(dim, dim)
-
-        if split_point > 0:
-            self.qkv_reg = nn.Linear(dim, dim * 3, bias=qkv_bias)
-            self.proj_reg = nn.Linear(dim, dim)
-        else:
-            self.qkv_reg = None
-            self.proj_reg = None
-
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-
-    def _qkv(self, x, layer):
-        B, N, C = x.shape
-        qkv = layer(x).reshape(B, N, 3, self.num_heads, self.head_dim)
-        return qkv.permute(2, 0, 3, 1, 4)
 
     def forward(self, x, rope):
         B, N, C = x.shape
-
-        if self.split_point > 0:
-            x_reg = x[:, :self.split_point]
-            x_main = x[:, self.split_point:]
-
-            qkv_reg = self._qkv(x_reg, self.qkv_reg)
-            qkv_main = self._qkv(x_main, self.qkv_main)
-
-            qkv = torch.cat([qkv_reg, qkv_main], dim=3)
-        else:
-            qkv = self._qkv(x, self.qkv_main)
-
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         q = rope(self.q_norm(q))
         k = rope(self.k_norm(k))
 
-        x = F.scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.attn_drop.p if self.training else 0.0,
-        )
-
+        x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
         x = x.transpose(1, 2).reshape(B, N, C)
 
-        if self.split_point > 0:
-            x_reg = self.proj_reg(x[:, :self.split_point])
-            x_main = self.proj_main(x[:, self.split_point:])
-            x = torch.cat([x_reg, x_main], dim=1)
-        else:
-            x = self.proj_main(x)
-
+        x = self.proj(x)
         x = self.proj_drop(x)
         return x
 
@@ -284,7 +249,8 @@ class JiTBlock(nn.Module):
                               attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
         self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
+        self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) \
+                if split_point > 0 else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
 
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
