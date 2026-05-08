@@ -289,10 +289,10 @@ class JiTBlock(nn.Module):
         super().__init__()
 
         self.split_point = split_point
-        self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                              attn_drop=attn_drop, proj_drop=proj_drop, split_point=0)
-        self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
+                              attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
+        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
 
