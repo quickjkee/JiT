@@ -87,9 +87,22 @@ class Denoiser(nn.Module):
 
     def drop_labels(self, labels, x_rae):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
-        out = torch.where(drop, torch.full_like(labels, self.num_classes), labels)
-        x_rae = torch.where(drop, torch.full_like(x_rae, self.num_classes), x_rae)
-        return out, x_rae
+
+        labels = torch.where(
+            drop,
+            torch.full_like(labels, self.num_classes),
+            labels,
+        )
+
+        drop_rae = drop.view(-1, *([1] * (x_rae.ndim - 1)))
+
+        x_rae = torch.where(
+            drop_rae,
+            torch.zeros_like(x_rae),
+            x_rae,
+        )
+
+        return labels, x_rae
 
     def sample_t(self, n: int, device=None):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
@@ -139,7 +152,7 @@ class Denoiser(nn.Module):
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), torch.full_like(x_rae, self.num_classes))
+        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), torch.zeros_like(x_rae))
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval

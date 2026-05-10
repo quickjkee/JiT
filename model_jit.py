@@ -276,8 +276,8 @@ class JiT(nn.Module):
         self.rae_in_dim = 768
         self.rae_token_norm = RMSNorm(self.rae_in_dim, eps=1e-6)
         self.rae_token_proj = nn.Linear(self.rae_in_dim, hidden_size)
-        #self.null_rae_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size))
-        #nn.init.normal_(self.null_rae_tokens, std=0.02)
+        self.null_rae_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size))
+        nn.init.normal_(self.null_rae_tokens, std=0.02)
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -365,7 +365,7 @@ class JiT(nn.Module):
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                register_tokens = self.prepare_rae_tokens(x_rae)
+                register_tokens = self.prepare_rae_tokens(x_rae) + self.null_rae_tokens
                 x = torch.cat([register_tokens, x], dim=1)
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
