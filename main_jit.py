@@ -221,19 +221,19 @@ def main(args):
     print(optimizer)
 
     # rae
-    rae_config, model_config, transport_config, sampler_config, _, misc, _, _ = parse_configs(args.rae_config)
+    rae_config, model_config, transport_config, sampler_config, _, misc_config, _, _ = parse_configs(args.rae_config)
     rae: RAE = instantiate_from_config(rae_config).to(device)
     rae_dit: Stage2ModelProtocol = instantiate_from_config(model_config).to(device)
     rae_dit.eval()  # important!
     rae_dit.requires_grad_(True)
     rae.eval()
 
-    shift_dim = misc.get("time_dist_shift_dim", 768 * 16 * 16)
-    shift_base = misc.get("time_dist_shift_base", 4096)
+    shift_dim = misc_config.get("time_dist_shift_dim", 768 * 16 * 16)
+    shift_base = misc_config.get("time_dist_shift_base", 4096)
     time_dist_shift = math.sqrt(shift_dim / shift_base)
     transport = create_transport(**transport_config['params'],time_dist_shift=time_dist_shift)
     sampler = Sampler(transport)
-    rae_dit, sampler_params = sampler_config['mode'], sampler_config['params']
+    _, sampler_params = sampler_config['mode'], sampler_config['params']
     sample_fn_rae_dit = sampler.sample_ode(**sampler_params)
 
     # Resume from checkpoint if provided

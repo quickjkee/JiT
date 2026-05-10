@@ -272,6 +272,13 @@ class JiT(nn.Module):
 
         self.initialize_weights()
 
+        # rae
+        self.rae_in_dim = 768
+        self.rae_token_norm = RMSNorm(self.rae_in_dim, eps=1e-6)
+        self.rae_token_proj = nn.Linear(self.rae_in_dim, hidden_size)
+        #self.null_rae_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size))
+        #nn.init.normal_(self.null_rae_tokens, std=0.02)
+
     def initialize_weights(self):
         # Initialize transformer layers:
         def _basic_init(module):
@@ -310,6 +317,22 @@ class JiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
+    def prepare_rae_tokens(self, x_rae):
+        if x_rae.ndim == 4:
+            # [B, C, H, W] -> [B, H*W, C]
+            x_rae = x_rae.flatten(2).transpose(1, 2)
+
+        # optional: reduce 256 tokens to 32
+        if x_rae.shape[1] != self.in_context_len:
+            # simple first version: adaptive average pool over sequence
+            x_rae = x_rae.transpose(1, 2)
+            x_rae = F.adaptive_avg_pool1d(x_rae, self.in_context_len)
+            x_rae = x_rae.transpose(1, 2)
+
+        x_rae = self.rae_token_norm(x_rae)
+        x_rae = self.rae_token_proj(x_rae)
+        return x_rae
+
     def unpatchify(self, x, p):
         """
         x: (N, T, patch_size**2 * C)
@@ -342,7 +365,7 @@ class JiT(nn.Module):
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                register_tokens = x_rae # TODO
+                register_tokens = self.prepare_rae_tokens(x_rae)
                 x = torch.cat([register_tokens, x], dim=1)
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
@@ -353,9 +376,9 @@ class JiT(nn.Module):
         return output
 
 
-def JiT_B_1(**kwargs):
+def JiT_B_16(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
-               bottleneck_dim=128, patch_size=1, **kwargs) # in_context_len=32, in_context_start=4,
+               bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=4,
 
 def JiT_B_32(**kwargs):
     return JiT(depth=12, hidden_size=768, num_heads=12,
@@ -379,7 +402,7 @@ def JiT_H_32(**kwargs):
 
 
 JiT_models = {
-    'JiT-B/1': JiT_B_1,
+    'JiT-B/16': JiT_B_16,
     'JiT-B/32': JiT_B_32,
     'JiT-L/16': JiT_L_16,
     'JiT-L/32': JiT_L_32,

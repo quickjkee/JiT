@@ -85,24 +85,25 @@ class Denoiser(nn.Module):
         self.cfg_scale = args.cfg
         self.cfg_interval = (args.interval_min, args.interval_max)
 
-    def drop_labels(self, labels):
+    def drop_labels(self, labels, x_rae):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
         out = torch.where(drop, torch.full_like(labels, self.num_classes), labels)
-        return out
+        x_rae = torch.where(drop, torch.full_like(x_rae, self.num_classes), x_rae)
+        return out, x_rae
 
     def sample_t(self, n: int, device=None):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
     def forward(self, x, labels, x_rae):
-        labels_dropped = self.drop_labels(labels) if self.training else labels
+        labels_dropped, x_rae_dropped = self.drop_labels(labels, x_rae) if self.training else labels, x_rae
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
 
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred = self.net(z, t.flatten(), labels_dropped, x_rae)
+        x_pred = self.net(z, t.flatten(), labels_dropped, x_rae_dropped)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
 
@@ -138,7 +139,7 @@ class Denoiser(nn.Module):
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), x_rae)
+        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), torch.full_like(x_rae, self.num_classes))
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
