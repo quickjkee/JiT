@@ -72,7 +72,7 @@ class RAEConvEmbed(nn.Module):
             hidden_size,
             kernel_size=1,
             stride=1,
-            bias=bias,
+            bias=False,
         )
         self.norm = RMSNorm(hidden_size, eps=1e-6)
 
@@ -379,6 +379,12 @@ class JiT(nn.Module):
         w2 = self.x_embedder.proj2.weight.data
         nn.init.xavier_uniform_(w2.view([w2.shape[0], -1]))
         nn.init.constant_(self.x_embedder.proj2.bias, 0)
+
+        # Init patch embed for rae
+        w1 = self.rae_embedder.proj1.weight.data
+        nn.init.xavier_uniform_(w1.view([w1.shape[0], -1]))
+        w2 = self.rae_embedder.proj2.weight.data
+        nn.init.xavier_uniform_(w2.view([w2.shape[0], -1]))
 
         # Initialize label embedding table:
         nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)

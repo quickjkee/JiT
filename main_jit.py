@@ -225,7 +225,8 @@ def main(args):
     rae: RAE = instantiate_from_config(rae_config).to(device)
     rae_dit: Stage2ModelProtocol = instantiate_from_config(model_config).to(device)
     rae_dit.eval()  # important!
-    rae_dit.requires_grad_(True)
+    rae_dit.requires_grad_(False)
+    rae.requires_grad_(False)
     rae.eval()
 
     shift_dim = misc_config.get("time_dist_shift_dim", 768 * 16 * 16)
