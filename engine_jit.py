@@ -25,11 +25,12 @@ def unpack_batch(batch, device, args):
     if os.path.exists(args.data_path):
         x, y = batch
     else:
-        x = batch['image']
+        x = batch['image'] # 0, 1
         y = torch.tensor(batch['label'])
     x = x.to(device, non_blocking=True)
+    x_in = x * 2.0 - 1.0
     y = y.to(device, non_blocking=True)
-    return x, y
+    return x_in, x, y
 
 def train_one_epoch(model, model_without_ddp, rae, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
@@ -48,13 +49,13 @@ def train_one_epoch(model, model_without_ddp, rae, data_loader, optimizer, devic
         # per iteration (instead of per epoch) lr scheduler
         lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
-        x, labels = unpack_batch(batch, device, args=args)
+        x, x_rae, labels = unpack_batch(batch, device, args=args)
         labels = labels.to(device, non_blocking=True)
         with torch.no_grad():
-            x = rae.encode(x)
+            x_rae = rae.encode(x_rae)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(x, labels)
+            loss = model(x, labels, x_rae)
 
         loss_value = loss.item()
         if not math.isfinite(loss_value):
@@ -86,7 +87,7 @@ def train_one_epoch(model, model_without_ddp, rae, data_loader, optimizer, devic
             break
 
 
-def evaluate(model_without_ddp, rae, args, epoch, batch_size=64, log_writer=None):
+def evaluate(model_without_ddp, rae_dit, sample_fn_rae_dit, args, epoch, batch_size=64, log_writer=None):
 
     model_without_ddp.eval()
     world_size = misc.get_world_size()
@@ -129,13 +130,18 @@ def evaluate(model_without_ddp, rae, args, epoch, batch_size=64, log_writer=None
         labels_gen = class_label_gen_world[start_idx:end_idx]
         labels_gen = torch.Tensor(labels_gen).long().cuda()
 
+        # rae-dit generation
+        z = torch.randn(labels_gen.size(0), 768, 16, 16).cuda()
+        model_kwargs = dict(y=labels_gen)
+        rae_dit_samples = sample_fn_rae_dit(z, rae_dit.forward, **model_kwargs)[-1]
+
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            sampled_images = model_without_ddp.generate(labels_gen)
+            sampled_images = model_without_ddp.generate(labels_gen, rae_dit_samples)
 
         torch.distributed.barrier()
 
         # denormalize images 
-        sampled_images = rae.decode(sampled_images)
+        sampled_images = (sampled_images + 1) / 2
         sampled_images = sampled_images.detach().cpu()
 
         # distributed save images

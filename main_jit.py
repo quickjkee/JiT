@@ -3,6 +3,7 @@ import datetime
 import numpy as np
 import os
 import time
+import math
 from pathlib import Path
 
 import torch
@@ -20,6 +21,8 @@ from overfit_experiment import run_overfit
 from denoiser import Denoiser
 from rae.src.utils.model_utils import instantiate_from_config
 from rae.src.utils.train_utils import parse_configs
+from rae.src.stage2.models import Stage2ModelProtocol
+from rae.src.stage2.transport import create_transport, Sampler
 from rae.src.stage1 import RAE
 
 
@@ -218,8 +221,20 @@ def main(args):
     print(optimizer)
 
     # rae
-    rae_config, _, _, _, _, _, _, _ = parse_configs(args.rae_config)
+    rae_config, model_config, transport_config, sampler_config, _, misc, _, _ = parse_configs(args.rae_config)
     rae: RAE = instantiate_from_config(rae_config).to(device)
+    rae_dit: Stage2ModelProtocol = instantiate_from_config(model_config).to(device)
+    rae_dit.eval()  # important!
+    rae_dit.requires_grad_(True)
+    rae.eval()
+
+    shift_dim = misc.get("time_dist_shift_dim", 768 * 16 * 16)
+    shift_base = misc.get("time_dist_shift_base", 4096)
+    time_dist_shift = math.sqrt(shift_dim / shift_base)
+    transport = create_transport(**transport_config['params'],time_dist_shift=time_dist_shift)
+    sampler = Sampler(transport)
+    rae_dit, sampler_params = sampler_config['mode'], sampler_config['params']
+    sample_fn_rae_dit = sampler.sample_ode(**sampler_params)
 
     # Resume from checkpoint if provided
     checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
@@ -290,7 +305,7 @@ def main(args):
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
             with torch.no_grad():
-                evaluate(model_without_ddp, rae, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
+                evaluate(model_without_ddp, rae_dit, sample_fn_rae_dit, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
             if 'Dino' in args.model:
                 evaluate_linear_probing(model_without_ddp.net, args, device=device)
             torch.cuda.empty_cache()
