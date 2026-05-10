@@ -14,6 +14,88 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
+class RAEConvEmbed(nn.Module):
+    """
+    Converts RAE/DINO feature maps into in-context/register tokens.
+
+    Input:
+        x_rae: [B, 768, 16, 16] or [B, 256, 768]
+
+    Output:
+        tokens: [B, in_context_len, hidden_size]
+    """
+    def __init__(
+        self,
+        rae_size=16,
+        in_context_len=32,
+        in_chans=768,
+        hidden_size=768,
+        bottleneck_dim=256,
+        bias=True,
+    ):
+        super().__init__()
+
+        if in_context_len == 16:
+            out_hw = (4, 4)
+        elif in_context_len == 32:
+            out_hw = (4, 8)
+        elif in_context_len == 64:
+            out_hw = (8, 8)
+        elif in_context_len == 256:
+            out_hw = (16, 16)
+        else:
+            raise ValueError(f"Unsupported in_context_len={in_context_len}")
+
+        self.rae_size = rae_size
+        self.out_hw = out_hw
+        self.num_tokens = out_hw[0] * out_hw[1]
+
+        assert self.num_tokens == in_context_len
+        assert rae_size % out_hw[0] == 0
+        assert rae_size % out_hw[1] == 0
+
+        kernel_size = (
+            rae_size // out_hw[0],
+            rae_size // out_hw[1],
+        )
+
+        # Similar spirit to BottleneckPatchEmbed.
+        self.proj1 = nn.Conv2d(
+            in_chans,
+            bottleneck_dim,
+            kernel_size=kernel_size,
+            stride=kernel_size,
+            bias=False,
+        )
+        self.proj2 = nn.Conv2d(
+            bottleneck_dim,
+            hidden_size,
+            kernel_size=1,
+            stride=1,
+            bias=bias,
+        )
+        self.norm = RMSNorm(hidden_size, eps=1e-6)
+
+
+    def forward(self, x_rae):
+        if x_rae.ndim == 3:
+            # [B, N, C] -> [B, C, H, W]
+            B, N, C = x_rae.shape
+            H = W = int(N ** 0.5)
+            assert H * W == N, f"Cannot reshape RAE tokens with N={N}"
+            x_rae = x_rae.transpose(1, 2).reshape(B, C, H, W)
+
+        B, C, H, W = x_rae.shape
+        assert H == self.rae_size and W == self.rae_size, \
+            f"Expected RAE map {self.rae_size}x{self.rae_size}, got {H}x{W}"
+
+        x = self.proj2(self.proj1(x_rae))          # [B, hidden, H_out, W_out]
+        x = x.flatten(2).transpose(1, 2)           # [B, R, hidden]
+        x = self.norm(x)
+
+        return x
+
+
 class BottleneckPatchEmbed(nn.Module):
     """ Image to Patch Embedding
     """
@@ -239,6 +321,8 @@ class JiT(nn.Module):
 
         # linear embed
         self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, in_channels, bottleneck_dim, hidden_size, bias=True)
+        self.rae_embedder = RAEConvEmbed(rae_size=16, in_context_len=in_context_len, in_chans=768, 
+                                         hidden_size=hidden_size, bottleneck_dim=min(768, hidden_size))
 
         # use fixed sin-cos embedding
         num_patches = self.x_embedder.num_patches
@@ -273,9 +357,6 @@ class JiT(nn.Module):
         self.initialize_weights()
 
         # rae
-        self.rae_in_dim = 768
-        self.rae_token_norm = RMSNorm(self.rae_in_dim, eps=1e-6)
-        self.rae_token_proj = nn.Linear(self.rae_in_dim, hidden_size)
         self.null_rae_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size))
         nn.init.normal_(self.null_rae_tokens, std=0.02)
 
@@ -317,22 +398,6 @@ class JiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-    def prepare_rae_tokens(self, x_rae):
-        if x_rae.ndim == 4:
-            # [B, C, H, W] -> [B, H*W, C]
-            x_rae = x_rae.flatten(2).transpose(1, 2)
-
-        # optional: reduce 256 tokens to 32
-        if x_rae.shape[1] != self.in_context_len:
-            # simple first version: adaptive average pool over sequence
-            x_rae = x_rae.transpose(1, 2)
-            x_rae = F.adaptive_avg_pool1d(x_rae, self.in_context_len)
-            x_rae = x_rae.transpose(1, 2)
-
-        x_rae = self.rae_token_norm(x_rae)
-        x_rae = self.rae_token_proj(x_rae)
-        return x_rae
-
     def unpatchify(self, x, p):
         """
         x: (N, T, patch_size**2 * C)
@@ -365,7 +430,7 @@ class JiT(nn.Module):
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                register_tokens = self.prepare_rae_tokens(x_rae) + self.null_rae_tokens
+                register_tokens = self.rae_embedder(x_rae) + self.null_rae_tokens
                 x = torch.cat([register_tokens, x], dim=1)
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 

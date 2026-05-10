@@ -31,7 +31,7 @@ stage_2:
     use_rmsnorm: true
     wo_shift: false
     use_pos_embed: true
-  ckpt: '/slot/sandbox/d/in/data/0_data_unpacked/stage2_model.pt'
+  ckpt: '/slot/sandbox/d/in/data/0_data_unpacked/ep-0000200.pt'
 
 transport:
   params:

@@ -109,7 +109,9 @@ class Denoiser(nn.Module):
         return torch.sigmoid(z)
 
     def forward(self, x, labels, x_rae):
-        labels_dropped, x_rae_dropped = self.drop_labels(labels, x_rae) if self.training else labels, x_rae
+        labels_dropped, x_rae_dropped = (
+            self.drop_labels(labels, x_rae) if self.training else (labels, x_rae)
+        )
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
 
