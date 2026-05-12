@@ -105,11 +105,11 @@ class Denoiser(nn.Module):
 
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
-        z_regs, v_regs = self.produce_registers(x_regs, t, labels_dropped)
+        z_regs, v_regs = self.produce_registers(x_regs, t)
 
         x_pred, x_regs_pred = self.net(z, t.flatten(), labels_dropped, z_regs)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-        v_regs_pred = (z_regs - x_regs_pred) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
+        v_regs_pred = (x_regs_pred - z_regs) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
 
         loss = diffusion_loss(v, v_pred)
         loss_in_context = ((v_regs - v_regs_pred) ** 2).mean(dim=(1, 2)).mean()

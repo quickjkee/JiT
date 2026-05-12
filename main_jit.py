@@ -190,6 +190,7 @@ def main(args):
 
     # dino
     dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", trust_repo=True, force_reload=False)
+    dinov2_vitb14 = dinov2_vitb14.to(device)
     dinov2_vitb14.eval().requires_grad_(False)
 
     # Create denoiser

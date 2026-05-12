@@ -248,7 +248,7 @@ class JiT(nn.Module):
         if self.in_context_len > 0:
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
-            self.in_context_posemb_init = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            self.in_context_posemb_init = nn.Parameter(torch.zeros(1, 1, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb_init, std=.02)
 
         # rope
