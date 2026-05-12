@@ -321,7 +321,7 @@ class JiT(nn.Module):
 
         # linear embed
         self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, in_channels, bottleneck_dim, hidden_size, bias=True)
-        self.rae_embedder = RAEConvEmbed(rae_size=16, in_context_len=in_context_len, in_chans=768, 
+        self.rae_embedder = RAEConvEmbed(rae_size=16, in_context_len=8, in_chans=768, 
                                          hidden_size=hidden_size, bottleneck_dim=min(768, hidden_size))
 
         # use fixed sin-cos embedding
@@ -436,11 +436,12 @@ class JiT(nn.Module):
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                register_tokens = self.rae_embedder(x_rae) + self.null_rae_tokens
-                x = torch.cat([register_tokens, x], dim=1)
+                register_tokens_rae = self.rae_embedder(x_rae) + self.null_rae_tokens
+                register_tokens_incontext = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1) + self.in_context_posemb 
+                x = torch.cat([register_tokens_rae, register_tokens_incontext, x], dim=1)
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        x = x[:, self.in_context_len:]
+        x = x[:, self.in_context_len + 8:]
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 

@@ -44,7 +44,6 @@ def train_one_epoch(model, model_without_ddp, rae, rae_dit, sample_fn_rae_dit, d
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
     print(len(data_loader))
-    p_gen = 0.1
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         # per iteration (instead of per epoch) lr scheduler
@@ -55,14 +54,9 @@ def train_one_epoch(model, model_without_ddp, rae, rae_dit, sample_fn_rae_dit, d
 
         # rae cond part
         with torch.no_grad():
-            x_rae_cond = rae.encode(x_rae)
-            #sigma = torch.rand(x_rae_real.size(0), 1, 1, 1, device=device) * 0.2
-            #x_rae_cond = x_rae_real + sigma * torch.randn_like(x_rae_real)
-
-            if torch.rand(()) < p_gen:
-                z = torch.randn(labels.size(0), 768, 16, 16, device=device)
-                x_rae_gen = sample_fn_rae_dit(z, rae_dit.forward, y=labels)[-1]
-                x_rae_cond = x_rae_gen
+            #z = torch.randn(labels.size(0), 768, 16, 16, device=device)
+            #x_rae_gen = sample_fn_rae_dit(z, rae_dit.forward, y=labels)[-1]
+            x_rae_cond = rae.encode(x_rae) #x_rae_gen
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             loss = model(x, labels, x_rae_cond)
