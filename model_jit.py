@@ -358,7 +358,7 @@ class JiT(nn.Module):
         self.initialize_weights()
 
         # rae
-        self.null_rae_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size))
+        self.null_rae_tokens = nn.Parameter(torch.zeros(1, 8, hidden_size))
         nn.init.normal_(self.null_rae_tokens, std=0.02)
         self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size))
         nn.init.normal_(self.in_context_posemb, std=0.02)
