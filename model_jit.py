@@ -353,9 +353,9 @@ class JiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
-                x_regs_init = x[:, :1]  
+                x_regs_init_repa = x[:, :1]  
                 x = x[:, 1:]
-                x_regs_init = x_regs_init.repeat(1, 4, 1)
+                x_regs_init = x_regs_init_repa.repeat(1, 4, 1)
                 x_regs_init += self.in_context_posemb_init2
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens = in_context_tokens + self.in_context_posemb
