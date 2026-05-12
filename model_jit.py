@@ -37,7 +37,7 @@ class RAEConvEmbed(nn.Module):
 
         if in_context_len == 8:
             out_hw = (2, 4)
-        if in_context_len == 16:
+        elif in_context_len == 16:
             out_hw = (4, 4)
         elif in_context_len == 32:
             out_hw = (4, 8)
@@ -330,7 +330,6 @@ class JiT(nn.Module):
         num_patches = self.x_embedder.num_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
-
         # rope
         half_head_dim = hidden_size // num_heads // 2
         hw_seq_len = input_size // patch_size
@@ -361,6 +360,8 @@ class JiT(nn.Module):
         # rae
         self.null_rae_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size))
         nn.init.normal_(self.null_rae_tokens, std=0.02)
+        self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size))
+        nn.init.normal_(self.in_context_posemb, std=0.02)
 
     def initialize_weights(self):
         # Initialize transformer layers:
