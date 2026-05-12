@@ -248,6 +248,8 @@ class JiT(nn.Module):
         if self.in_context_len > 0:
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
+            self.in_context_posemb_init = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            torch.nn.init.normal_(self.in_context_posemb_init, std=.02)
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
@@ -255,12 +257,12 @@ class JiT(nn.Module):
         self.feat_rope = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=0
+            num_cls_token=1
         )
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=self.in_context_len
+            num_cls_token=self.in_context_len + 1
         )
 
         # transformer
@@ -334,7 +336,7 @@ class JiT(nn.Module):
         in_context_target = (in_context_tokens - in_context_tokens_noised) / (1 - t).clamp_min(5e-2)
         return in_context_tokens_noised, in_context_target
 
-    def forward(self, x, t, y, x_registers):
+    def forward(self, x, t, y, x_regs):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -350,15 +352,18 @@ class JiT(nn.Module):
         x += self.pos_embed
         t = t.view(-1, *([1] * (x.ndim - 1)))
 
+        x_regs = x_regs + self.in_context_posemb_init
+        x = torch.cat([x_regs, x], dim=1)
+
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                x_registers = x_registers + self.in_context_posemb
-                x = torch.cat([x_registers, x], dim=1) 
+                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1) + self.in_context_posemb
+                x = torch.cat([in_context_tokens, x], dim=1) 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        in_context_pred = x[:, :self.in_context_len]
-        x = x[:, self.in_context_len:]
+        in_context_pred = x[:, self.in_context_len: self.in_context_len + 1]
+        x = x[:, self.in_context_len + 1:]
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)

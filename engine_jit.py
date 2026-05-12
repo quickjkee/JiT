@@ -19,6 +19,8 @@ from util.fid import calculate_fid
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
+from torchvision.transforms import Normalize
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 def unpack_batch(batch, device, args):
@@ -32,7 +34,7 @@ def unpack_batch(batch, device, args):
     y = y.to(device, non_blocking=True)
     return x, y
 
-def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
+def train_one_epoch(model, model_without_ddp, dinov2_vitb14, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -52,8 +54,18 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         x, labels = unpack_batch(batch, device, args=args)
         labels = labels.to(device, non_blocking=True)
 
+        with torch.inference_mode():
+            x_dino = F.interpolate(
+                x, size=(224, 224), mode="bicubic", align_corners=False
+            )
+            x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
+            x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
+            with torch.autocast(device_type="cuda", enabled=False):
+                x_dino = dinov2_vitb14.forward_features(x_dino.float())
+                x_cls = x_dino['x_norm_clstoken'].unsqueeze(1)
+
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(x, labels)
+            loss = model(x, labels, x_cls)
 
         loss_value = loss.item()
         if not math.isfinite(loss_value):

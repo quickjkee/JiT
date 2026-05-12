@@ -3,8 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from model_jit import JiT_models
-from torchvision.transforms import Normalize
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 HIDDEN_SIZES = {
     'JiT-B/16': 768,
@@ -59,11 +57,6 @@ class Denoiser(nn.Module):
                 in_context_start=args.in_context_start,
             )
         print_trainable(self.net)
-        
-        self.dinov2_vitb14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", trust_repo=True, force_reload=False)
-        self.dinov2_vitb14.eval().requires_grad_(False)
-        self.do_dino_registers = args.do_dino_registers
-
 
         self.img_size = args.img_size
         self.num_classes = args.class_num
@@ -99,39 +92,27 @@ class Denoiser(nn.Module):
         return torch.sigmoid(z)
 
     @torch.no_grad()
-    def produce_registers(self, x, t, labels):
-        if self.do_dino_registers:
-            x_dino = F.interpolate(
-                x, size=(224, 224), mode="bicubic", align_corners=False
-            )
-            x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
-            x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
-            x_registers = self.dinov2_vitb14.forward_features(x_dino)['x_norm_clstoken']
-            x_registers = x_registers.unsqueeze(1).repeat(1, self.in_context_len, 1)
-        else:
-            y_emb = self.net.y_embedder(labels)
-            x_registers = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-
+    def produce_registers(self, x_registers, t):
         e = torch.randn_like(x_registers) * self.noise_scale
         z_registers = t.squeeze(1) * x_registers + (1 - t.squeeze(1)) * e
         v_registers = (x_registers - z_registers) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
         return z_registers, v_registers
 
-    def forward(self, x, labels):
+    def forward(self, x, labels, x_regs):
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
 
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
-        z_registers, v_registers = self.produce_registers(x, t, labels_dropped)
+        z_regs, v_regs = self.produce_registers(x_regs, t, labels_dropped)
 
-        x_pred, x_registers_pred = self.net(z, t.flatten(), labels_dropped, z_registers)
+        x_pred, x_regs_pred = self.net(z, t.flatten(), labels_dropped, z_regs)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-        v_registers_pred = (x_registers_pred - z_registers) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
+        v_regs_pred = (z_regs - x_regs_pred) / (1 - t.squeeze(1)).clamp_min(self.t_eps)
 
         loss = diffusion_loss(v, v_pred)
-        loss_in_context = ((v_registers - v_registers_pred) ** 2).mean(dim=(1, 2)).mean()
+        loss_in_context = ((v_regs - v_regs_pred) ** 2).mean(dim=(1, 2)).mean()
         loss = loss + 0.05 * loss_in_context
 
         return loss
@@ -141,7 +122,7 @@ class Denoiser(nn.Module):
         device = labels.device
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
-        z_registers = self.noise_scale * torch.randn(bsz, self.in_context_len, self.hidden_size, device=device)
+        z_registers = self.noise_scale * torch.randn(bsz, 1, self.hidden_size, device=device)
         timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
 
         if self.method == "euler":
