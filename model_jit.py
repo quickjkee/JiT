@@ -35,6 +35,8 @@ class RAEConvEmbed(nn.Module):
     ):
         super().__init__()
 
+        if in_context_len == 8:
+            out_hw = (2, 4)
         if in_context_len == 16:
             out_hw = (4, 4)
         elif in_context_len == 32:
