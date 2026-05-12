@@ -32,7 +32,7 @@ def unpack_batch(batch, device, args):
     y = y.to(device, non_blocking=True)
     return x_in, x, y
 
-def train_one_epoch(model, model_without_ddp, rae, data_loader, optimizer, device, epoch, log_writer=None, args=None):
+def train_one_epoch(model, model_without_ddp, rae, rae_dit, sample_fn_rae_dit, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -44,6 +44,7 @@ def train_one_epoch(model, model_without_ddp, rae, data_loader, optimizer, devic
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
     print(len(data_loader))
+    p_gen = 0.1
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         # per iteration (instead of per epoch) lr scheduler
@@ -51,11 +52,20 @@ def train_one_epoch(model, model_without_ddp, rae, data_loader, optimizer, devic
 
         x, x_rae, labels = unpack_batch(batch, device, args=args)
         labels = labels.to(device, non_blocking=True)
+
+        # rae cond part
         with torch.no_grad():
-            x_rae = rae.encode(x_rae)
+            x_rae_cond = rae.encode(x_rae)
+            #sigma = torch.rand(x_rae_real.size(0), 1, 1, 1, device=device) * 0.2
+            #x_rae_cond = x_rae_real + sigma * torch.randn_like(x_rae_real)
+
+            if torch.rand(()) < p_gen:
+                z = torch.randn(labels.size(0), 768, 16, 16, device=device)
+                x_rae_gen = sample_fn_rae_dit(z, rae_dit.forward, y=labels)[-1]
+                x_rae_cond = x_rae_gen
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(x, labels, x_rae)
+            loss = model(x, labels, x_rae_cond)
 
         loss_value = loss.item()
         if not math.isfinite(loss_value):

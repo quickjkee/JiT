@@ -290,7 +290,7 @@ def main(args):
         if args.distributed and os.path.exists(args.data_path):
             data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch(model, model_without_ddp, rae, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
+        train_one_epoch(model, model_without_ddp, rae, rae_dit, sample_fn_rae_dit, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
 
         # Save checkpoint periodically
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
