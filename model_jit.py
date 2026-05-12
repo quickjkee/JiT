@@ -246,9 +246,9 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len + 4, hidden_size), requires_grad=True)
+            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
-            self.in_context_posemb_init = nn.Parameter(torch.zeros(1, 1, hidden_size), requires_grad=True)
+            self.in_context_posemb_init = nn.Parameter(torch.zeros(1, 5, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb_init, std=.02)
 
         # rope
@@ -257,12 +257,12 @@ class JiT(nn.Module):
         self.feat_rope = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=1
+            num_cls_token=5
         )
         self.feat_rope_incontext = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
-            num_cls_token=self.in_context_len + 4
+            num_cls_token=self.in_context_len + 5
         )
 
         # transformer
@@ -345,30 +345,28 @@ class JiT(nn.Module):
         x = self.x_embedder(x)
         x += self.pos_embed
 
-        in_context_tokens_init = y_emb.unsqueeze(1)
+        in_context_tokens_init = y_emb.unsqueeze(1).repeat(1, 5, 1)
         in_context_tokens_init = y_emb.unsqueeze(1) + self.in_context_posemb_init
         x = torch.cat([in_context_tokens_init, x], dim=1)
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
-                x_regs_init_repa = x[:, :1]  
-                x = x[:, 1:]
+                x_regs_init_repa = x[:, :5]  
+                x = x[:, 5:]
 
-                x_regs_init = x_regs_init_repa.repeat(1, 4, 1)
-                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens = torch.cat([x_regs_init, in_context_tokens], dim=1)
-                in_context_tokens = in_context_tokens + self.in_context_posemb
+                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1) + self.in_context_posemb
+                in_context_tokens = torch.cat([x_regs_init_repa, in_context_tokens], dim=1)
 
                 x = torch.cat([in_context_tokens, x], dim=1)
 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)  
 
-        x = x[:, self.in_context_len + 4:]
+        x = x[:, self.in_context_len + 5:]
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
         if drop_registers:
-            return output, x_regs_init
+            return output, x_regs_init_repa
         else:
             return output
 

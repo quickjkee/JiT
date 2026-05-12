@@ -62,7 +62,8 @@ def train_one_epoch(model, model_without_ddp, dinov2_vitb14, data_loader, optimi
             x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
             with torch.autocast(device_type="cuda", enabled=False):
                 x_dino = dinov2_vitb14.forward_features(x_dino.float())
-                x_cls = x_dino['x_norm_clstoken'].unsqueeze(1)
+                x_cls, x_regs = x_dino['x_norm_clstoken'].unsqueeze(1), x_dino['x_norm_regtokens']
+                x_cls = torch.cat([x_cls, x_regs], dim=1)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             loss = model(x, labels, x_cls)
