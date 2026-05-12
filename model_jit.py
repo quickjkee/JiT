@@ -14,26 +14,6 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
-def build_mlp(hidden_size, projector_dim, z_dim):
-    return nn.Sequential(
-                nn.Linear(hidden_size, projector_dim),
-                nn.SiLU(),
-                nn.Linear(projector_dim, projector_dim),
-                nn.SiLU(),
-                nn.Linear(projector_dim, z_dim),
-            )
-
-def select_low_norm_registers(regs, k):
-    """
-    regs: [B, 32, H]
-    returns: [B, k, H]
-    """
-    norms = regs.norm(dim=-1)  # [B, 32]
-    idx = norms.topk(k=k, dim=-1, largest=False).indices
-    gather_idx = idx.unsqueeze(-1).expand(-1, -1, regs.size(-1))
-    return torch.gather(regs, dim=1, index=gather_idx)
-
-
 class BottleneckPatchEmbed(nn.Module):
     """ Image to Patch Embedding
     """
@@ -241,7 +221,6 @@ class JiT(nn.Module):
         bottleneck_dim=128,
         in_context_len=32,
         in_context_start=8,
-        dino_embed_dim=768
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -282,13 +261,6 @@ class JiT(nn.Module):
             dim=half_head_dim,
             pt_seq_len=hw_seq_len,
             num_cls_token=self.in_context_len
-        )
-
-        # repa projector
-        self.register_projector = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size),
-            nn.SiLU(),
-            nn.Linear(self.hidden_size, dino_embed_dim),
         )
 
         # transformer
@@ -356,7 +328,7 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y, drop_registers_layer=None):
+    def forward(self, x, t, y, drop_registers=False):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -369,28 +341,32 @@ class JiT(nn.Module):
 
         # forward JiT
         x = self.x_embedder(x)
-        N, T, D = x.shape
         x += self.pos_embed
+
+        in_context_tokens_init = y_emb.unsqueeze(1)
+        in_context_tokens_init += self.in_context_posemb_init
+        x = torch.cat([in_context_tokens_init, x], dim=1)
 
         for i, block in enumerate(self.blocks):
             if self.in_context_len > 0 and i == self.in_context_start:
+                if drop_registers:
+                    x_regs_init = x[:, :1]  
+
+                x = x[:, 1:]
+                x_regs_init = x_regs_init.repeat(1, 4, 1)
+                x_regs_init += self.in_context_posemb_init2
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
-                x = torch.cat([in_context_tokens, x], dim=1)
+                x = torch.cat([x_regs_init, in_context_tokens, x], dim=1)
 
-            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
-
-            if drop_registers_layer is not None and i == drop_registers_layer:
-                registers_pred = x[:, :self.in_context_len]    
-                registers_pred = select_low_norm_registers(registers_pred, k=5)     
-                registers_pred = self.register_projector(registers_pred)
+            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)  
 
         x = x[:, self.in_context_len:]
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        if drop_registers_layer is not None:
-            return output, registers_pred
+        if drop_registers:
+            return output, x_regs_init
         else:
             return output
 

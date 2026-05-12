@@ -188,6 +188,14 @@ def main(args):
     torch._dynamo.config.cache_size_limit = 128
     torch._dynamo.config.optimize_ddp = False
 
+
+    # dinov2
+    dinov2_vitb14 = torch.hub.load(
+            "facebookresearch/dinov2", "dinov2_vitb14_reg",
+            trust_repo=True, force_reload=False
+        )
+    dinov2_vitb14.eval().requires_grad_(False).cuda()
+
     # Create denoiser
     model = Denoiser(args)
 
@@ -266,7 +274,7 @@ def main(args):
         if args.distributed and os.path.exists(args.data_path):
             data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
+        train_one_epoch(model, model_without_ddp, dinov2_vitb14, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
 
         # Save checkpoint periodically
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:

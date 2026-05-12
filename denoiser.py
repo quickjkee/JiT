@@ -3,8 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from model_jit import JiT_models
-from torchvision.transforms import Normalize
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 def print_trainable(model):
@@ -49,13 +47,6 @@ class Denoiser(nn.Module):
     ):
         super().__init__()
 
-        dinov2_vitg14 = torch.hub.load(
-            "facebookresearch/dinov2", "dinov2_vitb14_reg",
-            trust_repo=True, force_reload=False
-        )
-        dinov2_vitg14.eval().requires_grad_(False).cuda()
-        object.__setattr__(self, "_dinov2_vitg14", dinov2_vitg14)
-
         self.net = JiT_models[args.model](
                 input_size=args.img_size,
                 in_channels=3,
@@ -64,7 +55,6 @@ class Denoiser(nn.Module):
                 proj_drop=args.proj_dropout,
                 in_context_len=args.in_context_len,
                 in_context_start=args.in_context_start,
-                dino_embed_dim=dinov2_vitg14.embed_dim
             )
         print_trainable(self.net)
 
@@ -100,18 +90,7 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, x, labels):
-        with torch.inference_mode():
-            x_dino = F.interpolate(
-                x, size=(224, 224), mode="bicubic", align_corners=False
-            )
-            x_dino = (x_dino + 1.0) * 0.5          # [-1,1] → [0,1]
-            x_dino = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x_dino)
-            with torch.autocast(device_type="cuda", enabled=False):
-                x_dino = self._dinov2_vitg14.forward_features(x_dino.float())
-                x_registers, x_cls = x_dino['x_norm_regtokens'], x_dino['x_norm_clstoken'].unsqueeze(1)
-                x_registers = torch.cat([x_cls, x_registers], dim=1)
-
+    def forward(self, x, labels, x_cls):
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
@@ -119,10 +98,10 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred, registers_pred = self.net(z, t.flatten(), labels_dropped, drop_registers_layer=7)
+        x_pred, x_regs = self.net(z, t.flatten(), labels_dropped, drop_registers=True)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
-        loss_repa = repa_loss(x_registers, registers_pred)
+        loss_repa = repa_loss(x_cls, x_regs)
         loss = loss + 0.05 * loss_repa
 
         return loss
