@@ -345,8 +345,7 @@ class JiT(nn.Module):
         x = self.x_embedder(x)
         x += self.pos_embed
 
-        in_context_tokens_init = y_emb.unsqueeze(1).repeat(1, 5, 1)
-        in_context_tokens_init = y_emb.unsqueeze(1) + self.in_context_posemb_init
+        in_context_tokens_init = y_emb.unsqueeze(1).repeat(1, 5, 1) + self.in_context_posemb_init
         x = torch.cat([in_context_tokens_init, x], dim=1)
 
         for i, block in enumerate(self.blocks):

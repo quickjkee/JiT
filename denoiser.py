@@ -83,15 +83,22 @@ class Denoiser(nn.Module):
 
     def drop_labels(self, labels):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
-        out = torch.where(drop, torch.full_like(labels, self.num_classes), labels)
-        return out
-
+        labels_dropped = torch.where(
+            drop,
+            torch.full_like(labels, self.num_classes),
+            labels,
+        )
+        return labels_dropped, drop
+        
     def sample_t(self, n: int, device=None):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
     def forward(self, x, labels, x_cls):
-        labels_dropped = self.drop_labels(labels) if self.training else labels
+        labels_dropped, drop_mask = self.drop_labels(labels) if self.training else (
+                    labels,
+                    torch.zeros_like(labels, dtype=torch.bool),
+                )
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
 
@@ -101,8 +108,10 @@ class Denoiser(nn.Module):
         x_pred, x_regs = self.net(z, t.flatten(), labels_dropped, drop_registers=True)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
-        loss_repa = repa_loss(x_cls, x_regs)
-        loss = loss + 0.05 * loss_repa
+
+        if (~drop_mask).any():
+            loss_repa = repa_loss(x_regs[~drop_mask], x_cls[~drop_mask])
+            loss = loss + 0.05 * loss_repa
 
         return loss
 
