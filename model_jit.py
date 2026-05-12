@@ -246,12 +246,10 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len + 4, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
-            self.in_context_posemb_init = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            self.in_context_posemb_init = nn.Parameter(torch.zeros(1, 1, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb_init, std=.02)
-            self.in_context_posemb2 = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            torch.nn.init.normal_(self.in_context_posemb2, std=.02)
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
@@ -355,11 +353,13 @@ class JiT(nn.Module):
             if self.in_context_len > 0 and i == self.in_context_start:
                 x_regs_init_repa = x[:, :1]  
                 x = x[:, 1:]
+
                 x_regs_init = x_regs_init_repa.repeat(1, 4, 1)
-                x_regs_init += self.in_context_posemb_init2
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                in_context_tokens = torch.cat([x_regs_init, in_context_tokens], dim=1)
                 in_context_tokens = in_context_tokens + self.in_context_posemb
-                x = torch.cat([x_regs_init, in_context_tokens, x], dim=1)
+
+                x = torch.cat([in_context_tokens, x], dim=1)
 
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)  
 
