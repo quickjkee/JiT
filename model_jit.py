@@ -175,7 +175,7 @@ class Attention(nn.Module):
         q = rope(self.q_norm(q))
         k = rope(self.k_norm(k))
 
-        x = scaled_dot_product_attention(
+        x = F.scaled_dot_product_attention(
             q, k, v,
             dropout_p=self.attn_drop.p if self.training else 0.0,
         )
@@ -289,23 +289,24 @@ class JiTBlock(nn.Module):
         super().__init__()
 
         self.split_point = split_point
-        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm1 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
                               attn_drop=attn_drop, proj_drop=proj_drop, split_point=split_point)
-        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm2 = RMSNormSplit(hidden_size, eps=1e-6, split_point=split_point) if split_point > 0 else RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
-
+        self.mlp = SplitSwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop, split_point=split_point) if split_point > 0 \
+            else SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop) 
 
         self.adaLN_act = nn.SiLU()
         self.adaLN_proj = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        self.adaLN_proj_reg = nn.Linear(hidden_size, 6 * hidden_size, bias=True)
 
 
     @torch.compile
     def forward(self, x,  c, feat_rope=None):
         h = self.adaLN_act(c)
         mod = self.adaLN_proj(h)
-        mod_reg = mod
+        mod_reg = self.adaLN_proj_reg(h)
 
         # Modulation splitting
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = split_mod(mod)
@@ -509,7 +510,7 @@ class JiT(nn.Module):
 
 
 def JiT_B_16(**kwargs):
-    return JiT(depth=12, hidden_size=768, num_heads=12,
+    return JiT(depth=14, hidden_size=1024, num_heads=16,
                bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=4,
 
 def JiT_B_32(**kwargs):
