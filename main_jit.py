@@ -117,8 +117,8 @@ def get_args_parser():
                         help='URL used to set up distributed training')
 
     # sra
-    parser.add_argument('--out_layer_sra_student', default=5, type=int)
-    parser.add_argument('--out_layer_sra_teacher', default=8, type=int)
+    parser.add_argument('--out_layer_sra_student', default=4, type=int)
+    parser.add_argument('--out_layer_sra_teacher', default=10, type=int)
     parser.add_argument('--sra_coeff', default=0.2, type=float)
 
     # overfit experiment
