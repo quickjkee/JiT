@@ -117,7 +117,8 @@ class Denoiser(nn.Module):
         if model_teacher is not None:
             t_sra = self.shift_t_sra(t)
             z_sra = t_sra * x + (1 - t_sra) * e
-            _, regs_target = model_teacher(z_sra, t_sra.flatten(), labels_dropped, out_layer_sra=self.args.out_layer_sra_teacher)
+            with torch.no_grad():
+                _, regs_target = model_teacher(z_sra, t_sra.flatten(), labels_dropped, out_layer_sra=self.args.out_layer_sra_teacher)
             loss_sra = self.sra_loss(regs_pred, regs_target)
             loss = loss + self.args.sra_coeff * loss_sra
 

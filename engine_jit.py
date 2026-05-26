@@ -21,6 +21,24 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 
+@torch.no_grad()
+def update_ema_model(ema_model, online_model, decay=0.9999):
+    ema_model.eval()
+
+    ema_params = dict(ema_model.named_parameters())
+    online_params = dict(online_model.named_parameters())
+
+    for name, p_online in online_params.items():
+        p_ema = ema_params[name]
+        p_ema.mul_(decay).add_(p_online.detach(), alpha=1.0 - decay)
+
+    # Copy buffers directly, if any.
+    ema_buffers = dict(ema_model.named_buffers())
+    online_buffers = dict(online_model.named_buffers())
+
+    for name, b_online in online_buffers.items():
+        ema_buffers[name].copy_(b_online)
+
 def unpack_batch(batch, device, args):
     if os.path.exists(args.data_path):
         x, y = batch
@@ -32,7 +50,7 @@ def unpack_batch(batch, device, args):
     y = y.to(device, non_blocking=True)
     return x, y
 
-def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
+def train_one_epoch(model, model_without_ddp, teacher_net, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -53,7 +71,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(x, labels, model_teacher=model_without_ddp)
+            loss = model(x, labels, model_teacher=teacher_net)
 
         loss_value = loss.item()
         if not math.isfinite(loss_value):
@@ -67,6 +85,11 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         torch.cuda.synchronize()
 
         model_without_ddp.update_ema()
+        update_ema_model(
+                        teacher_net,
+                        model_without_ddp.net,
+                        decay=args.ema_decay1,
+                    )
 
         metric_logger.update(loss=loss_value)
         lr = optimizer.param_groups[0]["lr"]
