@@ -14,6 +14,18 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
+class SimpleHead(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super(SimpleHead, self).__init__()
+        self.linear1 = nn.Linear(in_dim, in_dim+out_dim)
+        self.linear2 = nn.Linear(in_dim+out_dim, out_dim)
+        self.act = nn.SiLU()
+    def forward(self, x):
+        x=self.linear1(x)
+        x=self.linear2(self.act(x))
+        return x
+
+
 class BottleneckPatchEmbed(nn.Module):
     """ Image to Patch Embedding
     """
@@ -81,16 +93,13 @@ class LabelEmbedder(nn.Module):
     """
     Embeds class labels into vector representations. Also handles label dropout for classifier-free guidance.
     """
-    def __init__(self, num_classes, hidden_size, n_tokens):
+    def __init__(self, num_classes, hidden_size):
         super().__init__()
-        self.embedding_table = nn.Embedding(num_classes + 1, hidden_size * n_tokens)
+        self.embedding_table = nn.Embedding(num_classes + 1, hidden_size)
         self.num_classes = num_classes
-        self.n_tokens = n_tokens
 
     def forward(self, labels):
         embeddings = self.embedding_table(labels)
-        if self.n_tokens > 1:
-            embeddings = embeddings.view(embeddings.shape[0], self.n_tokens, -1)
         return embeddings
 
 
@@ -132,7 +141,7 @@ class Attention(nn.Module):
         q = rope(q)
         k = rope(k)
 
-        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+        x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
 
         x = x.transpose(1, 2).reshape(B, N, C)
 
@@ -238,8 +247,7 @@ class JiT(nn.Module):
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(hidden_size)
-        self.y_embedder = LabelEmbedder(num_classes, hidden_size, n_tokens=1)
-        self.y_embedder_incontext = LabelEmbedder(num_classes, hidden_size, n_tokens=self.in_context_len)
+        self.y_embedder = LabelEmbedder(num_classes, hidden_size)
 
         # linear embed
         self.x_embedder = BottleneckPatchEmbed(input_size, patch_size, in_channels, bottleneck_dim, hidden_size, bias=True)
@@ -250,8 +258,6 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            #self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            #torch.nn.init.normal_(self.register_tokens, std=.02)
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
@@ -279,6 +285,9 @@ class JiT(nn.Module):
 
         # linear predict
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
+
+        # sra head
+        self.ap_head = SimpleHead(hidden_size, hidden_size)
 
         self.initialize_weights()
 
@@ -334,7 +343,7 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y):
+    def forward(self, x, t, y, out_layer_sra=None):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -352,13 +361,13 @@ class JiT(nn.Module):
         for i, block in enumerate(self.blocks):
             # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
-                in_context_tokens = self.y_embedder_incontext(y)
+                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
-                
-                #register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                #x = torch.cat([register_tokens, x], dim=1)
-                
+
+            if out_layer_sra is not None and i == out_layer_sra:
+                out_registers = self.ap_head(x[:, :self.in_context_len]) if self.training else x[:, :self.in_context_len]
+
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
@@ -366,23 +375,26 @@ class JiT(nn.Module):
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        return output
+        if out_layer_sra is None:
+            return output
+        else:
+            return output, out_registers
 
 
 def JiT_B_16(**kwargs):
-    return JiT(depth=12, hidden_size=768, num_heads=12, #mlp_ratio=5.27,
+    return JiT(depth=12, hidden_size=768, num_heads=12,
                bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=4,
 
 def JiT_B_32(**kwargs):
-    return JiT(depth=12, hidden_size=768, num_heads=12, #mlp_ratio=5.27,
+    return JiT(depth=12, hidden_size=768, num_heads=12,
                bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=4,
 
 def JiT_L_16(**kwargs):
-    return JiT(depth=24, hidden_size=1024, num_heads=16, #mlp_ratio=5.17,
+    return JiT(depth=24, hidden_size=1024, num_heads=16,
                bottleneck_dim=128, patch_size=16, **kwargs) # in_context_len=32, in_context_start=8,
 
 def JiT_L_32(**kwargs):
-    return JiT(depth=24, hidden_size=1024, num_heads=16, #mlp_ratio=5.17,
+    return JiT(depth=24, hidden_size=1024, num_heads=16,
                bottleneck_dim=128, patch_size=32, **kwargs) # in_context_len=32, in_context_start=8,
 
 def JiT_H_16(**kwargs):

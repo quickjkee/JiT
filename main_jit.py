@@ -116,6 +116,11 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://',
                         help='URL used to set up distributed training')
 
+    # sra
+    parser.add_argument('--out_layer_sra_student', default=5, type=int)
+    parser.add_argument('--out_layer_sra_teacher', default=8, type=int)
+    parser.add_argument('--sra_coeff', default=0.2, type=float)
+
     # overfit experiment
     parser.add_argument('--overfit', action='store_true', help='Run tiny overfit experiment instead of full training')
     parser.add_argument('--overfit_n', type=int, default=16, help='Number of images in overfit subset')

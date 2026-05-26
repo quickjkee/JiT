@@ -53,7 +53,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(x, labels)
+            loss = model(x, labels, model_teacher=model_without_ddp)
 
         loss_value = loss.item()
         if not math.isfinite(loss_value):

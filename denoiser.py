@@ -3,8 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from model_jit import JiT_models
-from torchvision.transforms import Normalize
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from torch.nn.functional import smooth_l1_loss
 
 
 def print_trainable(model):
@@ -94,7 +93,16 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, x, labels):
+    def shift_t_sra(self, t):
+        t_shift = torch.rand(t.shape, device=t.device) * 0.2
+        t_shifted = t + t_shift 
+        t_shifted = t_shifted.clamp_max(1)
+        return t_shifted
+
+    def sra_loss(self, pred, target):
+        return smooth_l1_loss(pred, target, beta=0.05)
+
+    def forward(self, x, labels, model_teacher=None):
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
@@ -102,9 +110,16 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred = self.net(z, t.flatten(), labels_dropped)
+        x_pred, regs_pred = self.net(z, t.flatten(), labels_dropped, out_layer_sra=self.args.out_layer_sra_student)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
+
+        if model_teacher is not None:
+            t_sra = self.shift_t_sra(t)
+            z_sra = t_sra * x + (1 - t_sra) * e
+            _, regs_target = model_teacher(z_sra, t_sra.flatten(), labels_dropped, out_layer_sra=self.args.out_layer_sra_teacher)
+            loss_sra = self.sra_loss(regs_pred, regs_target)
+            loss = loss + self.args.sra_coeff * loss_sra
 
         return loss
 
