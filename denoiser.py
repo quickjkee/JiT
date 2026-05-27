@@ -129,7 +129,7 @@ class Denoiser(nn.Module):
         p_uncond = self.label_drop_prob
         loss = (1.0 - p_uncond) * loss_cond + p_uncond * loss_uncond
 
-        return loss, loss_cond, loss_uncond
+        return loss
 
     @torch.no_grad()
     def generate(self, labels):
