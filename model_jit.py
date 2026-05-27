@@ -330,39 +330,41 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y):
-        """
-        x: (N, C, H, W)
-        t: (N,)
-        y: (N,)
-        """
-        # class and time embeddings
+    def forward(self, x, t, y, return_regs_layer=None):
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
 
-        # forward JiT
         x = self.x_embedder(x)
         x += self.pos_embed
 
+        x_regs = None
+
+        if return_regs_layer is not None:
+            assert return_regs_layer >= self.in_context_start
+
         for i, block in enumerate(self.blocks):
-            # in-context
             if self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens += self.in_context_posemb
+                in_context_tokens = in_context_tokens + self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
-                
-                #register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                #x = torch.cat([register_tokens, x], dim=1)
-                
+
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        x = x[:, self.in_context_len:]
+            if return_regs_layer is not None and i == return_regs_layer:
+                x_regs = x[:, :self.in_context_len]
+
+        if self.in_context_len > 0:
+            x = x[:, self.in_context_len:]
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        return output
+        if return_regs_layer is None:
+            return output
+
+        assert x_regs is not None
+        return output, x_regs
 
 
 def JiT_B_16(**kwargs):

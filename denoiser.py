@@ -50,11 +50,11 @@ def select_semantic_registers(regs, exclude_top_frac=0.15):
     batch_idx = torch.arange(B, device=regs.device)[:, None]
     return regs[batch_idx, keep_idx]
 
-def disp_loss(z): # Dispersive Loss implementation (InfoNCE-L2 variant)
-    z = z.reshape((z.shape[0],-1)) # flatten
-    diff = torch.nn.functional.pdist(z).pow(2)/z.shape[1] # pairwise distance
-    diff = torch.concat((diff, diff, torch.zeros(z.shape[0]).cuda()))  # match JAX implementation of full BxB matrix
-    return torch.log(torch.exp(-diff).mean()) # calculate loss
+def disp_loss(z):
+    z = z.reshape((z.shape[0], -1))
+    diff = torch.nn.functional.pdist(z).pow(2) / z.shape[1]
+    diff = torch.cat((diff, diff, torch.zeros(z.shape[0], device=z.device, dtype=z.dtype)))
+    return torch.log(torch.exp(-diff).mean())
 
 
 class Denoiser(nn.Module):
@@ -119,7 +119,7 @@ class Denoiser(nn.Module):
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss_dm = diffusion_loss(v, v_pred)
         loss_disp = disp_loss(select_semantic_registers(x_regs, exclude_top_frac=0.15))
-        loss = loss_dm + 0.5 * loss_disp
+        loss = loss_dm + 1e-3 * loss_disp
 
         return loss, loss_dm, loss_disp
 
