@@ -119,9 +119,9 @@ class Denoiser(nn.Module):
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss_dm = diffusion_loss(v, v_pred)
         loss_disp = disp_loss(select_semantic_registers(x_regs, exclude_top_frac=0.15))
-        loss = loss_dm + 0.5 * loss_disp
+        loss = loss_dm + 1e-3 * loss_disp
 
-        return loss, loss_dm, 0.5 * loss_disp
+        return loss, loss_dm, 1e-3 * loss_disp
 
     @torch.no_grad()
     def generate(self, labels):
