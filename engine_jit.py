@@ -53,7 +53,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            loss = model(x, labels)
+            loss, loss_dm, loss_cls = model(x, labels)
 
         loss_value = loss.item()
         if not math.isfinite(loss_value):
@@ -68,9 +68,12 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
 
         model_without_ddp.update_ema()
 
-        metric_logger.update(loss=loss_value)
+        metric_logger.update(loss=loss_dm.item())
+        metric_logger.update(loss_cls=loss_cls.item())
         lr = optimizer.param_groups[0]["lr"]
+        lr_cls = optimizer.param_groups[3]["lr"]
         metric_logger.update(lr=lr)
+        metric_logger.update(lr_cls=lr_cls)
 
         loss_value_reduce = misc.all_reduce_mean(loss_value)
 

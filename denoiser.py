@@ -103,12 +103,12 @@ class Denoiser(nn.Module):
         x_pred, x_cls = self.net(z, t.flatten(), labels_dropped, labels_dropped_cls)
 
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-        loss = diffusion_loss(v, v_pred)
+        loss_dm = diffusion_loss(v, v_pred)
 
         loss_cls = self.loss_cls(x_cls, labels)
-        loss = loss + self.args.cls_loss_weight * loss_cls
+        loss = loss_dm + self.args.cls_loss_weight * loss_cls
 
-        return loss
+        return loss, loss_dm, loss_cls
 
     @torch.no_grad()
     def generate(self, labels):
