@@ -36,14 +36,6 @@ def diffusion_loss(v, v_pred):
     return loss
 
 
-def repa_loss(dino_feats, x_mid, t=None):
-    dino_feats = F.normalize(dino_feats, dim=-1) # [B,T,D]
-    x_mid = F.normalize(x_mid, dim=-1) # [B,T,D]
-    cos_sim = (dino_feats * x_mid).sum(dim=-1)    # [B,T]
-    loss_repa = -cos_sim.mean(dim=(1)).mean()
-    return loss_repa
-
-
 class Denoiser(nn.Module):
     def __init__(
         self,
@@ -85,7 +77,11 @@ class Denoiser(nn.Module):
         self.cfg_scale = args.cfg
         self.cfg_interval = (args.interval_min, args.interval_max)
 
-    def drop_labels(self, labels):
+        # cls 
+        self.loss_cls = torch.nn.CrossEntropyLoss()
+
+    def drop_labels(self, labels, drop_prob=None):
+        drop_prob = self.label_drop_prob if drop_prob is None else drop_prob
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
         out = torch.where(drop, torch.full_like(labels, self.num_classes), labels)
         return out
@@ -96,15 +92,20 @@ class Denoiser(nn.Module):
 
     def forward(self, x, labels):
         labels_dropped = self.drop_labels(labels) if self.training else labels
+        labels_dropped_cls = self.drop_labels(labels, drop_prob=0.9)
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
 
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred = self.net(z, t.flatten(), labels_dropped)
+        x_pred, x_cls = self.net(z, t.flatten(), labels_dropped, labels_dropped_cls)
+
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss = diffusion_loss(v, v_pred)
+
+        loss_cls = self.loss_cls(x_cls, labels)
+        loss = loss + 0.03 * loss_cls
 
         return loss
 

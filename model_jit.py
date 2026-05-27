@@ -14,6 +14,33 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
+def pool_semantic_registers(regs, exclude_top_frac=0.25, eps=1e-6):
+    """
+    regs: [B, R, D]
+    returns: [B, D]
+
+    Excludes highest-norm registers per sample, then averages the rest.
+    """
+    B, R, D = regs.shape
+
+    norms = regs.norm(dim=-1)  # [B, R]
+
+    # number of tokens to keep
+    keep_k = max(1, int(R * (1.0 - exclude_top_frac)))
+
+    # keep lowest/mid norm tokens, exclude largest norm sinks
+    keep_idx = norms.topk(k=keep_k, dim=1, largest=False).indices  # [B, keep_k]
+
+    batch_idx = torch.arange(B, device=regs.device)[:, None]
+    regs_keep = regs[batch_idx, keep_idx]  # [B, keep_k, D]
+
+    # normalize before pooling so magnitude does not dominate
+    regs_keep = F.normalize(regs_keep.float(), dim=-1, eps=eps)
+    pooled = regs_keep.mean(dim=1)
+
+    return pooled
+
+
 class BottleneckPatchEmbed(nn.Module):
     """ Image to Patch Embedding
     """
@@ -276,6 +303,11 @@ class JiT(nn.Module):
         # linear predict
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
 
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, num_classes)
+        )
+
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -330,7 +362,7 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y):
+    def forward(self, x, t, y, y_cls=None):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -341,28 +373,46 @@ class JiT(nn.Module):
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
 
+        # for linear probing
+        if y_cls is not None:
+            y_uncond = self.y_embedder(y_cls)   
+            c_uncond = t_emb + y_uncond                          
+            x_uncond = x.clone()
+
         # forward JiT
         x = self.x_embedder(x)
         x += self.pos_embed
 
         for i, block in enumerate(self.blocks):
-            # in-context
+            # diffusion block
             if self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
-                
-                #register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                #x = torch.cat([register_tokens, x], dim=1)
-                
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
+
+            # cls block
+            if y_cls is not None:
+                if self.in_context_len > 0 and i == self.in_context_start:
+                    in_context_tokens = y_uncond.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                    in_context_tokens += self.in_context_posemb
+                    x_uncond = torch.cat([in_context_tokens, x_uncond], dim=1)
+                x_uncond = block(x_uncond, c_uncond, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
+
+                if i == self.cls_depth:
+                    x_regs_uncond = pool_semantic_registers(x_uncond[:, :self.in_context_len].clone(), exclude_top_frac=0.15)
+                    x_regs_uncond = self.classifier(x_regs_uncond)
+                    y_cls = False
 
         x = x[:, self.in_context_len:]
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        return output
+        if y_cls is None:
+            return output
+        else:
+            return output, x_regs_uncond
 
 
 def JiT_B_16(**kwargs):
