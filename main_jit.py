@@ -128,6 +128,12 @@ def get_args_parser():
     parser.add_argument('--overfit_save_imgs', action='store_true', help='Save reconstructions during overfit')
     parser.add_argument('--overfit_img_freq', type=int, default=200, help='Save images every N steps')
 
+    # cls
+    parser.add_argument('--cls_depth', default=5, type=int)
+    parser.add_argument('--cls_drop_prob', default=0.9, type=float)
+    parser.add_argument('--cls_loss_weight', default=0.03, type=float)
+    parser.add_argument("--cls_lr", default=1e-3, type=float)
+
 
     return parser
 
@@ -208,8 +214,52 @@ def main(args):
     model_without_ddp = model.module
 
     # Set up optimizer with weight decay adjustment for bias and norm layers
-    param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
+    base_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
+
+    name_by_id = {id(p): n for n, p in model_without_ddp.named_parameters()}
+    cls_keys = ("classifier", "cls_head", "reg_cls_head")
+
+    param_groups = []
+    cls_param_count = 0
+
+    for g in base_groups:
+        main_params = []
+        cls_params = []
+
+        for p in g["params"]:
+            name = name_by_id[id(p)]
+
+            if any(k in name for k in cls_keys):
+                cls_params.append(p)
+                cls_param_count += p.numel()
+            else:
+                main_params.append(p)
+
+        cfg = {k: v for k, v in g.items() if k != "params"}
+
+        if main_params:
+            param_groups.append({
+                **cfg,
+                "params": main_params,
+                "lr_scale": 1.0,
+            })
+
+        if cls_params:
+            param_groups.append({
+                **cfg,
+                "params": cls_params,
+                "base_lr": args.cls_lr,
+                "constant_lr": True,
+            })
+
+    print(f"Classifier params: {cls_param_count:,}")
+
+    optimizer = torch.optim.AdamW(
+        param_groups,
+        lr=args.lr,
+        betas=(0.9, 0.95),
+    )
+
     print(optimizer)
 
     # Resume from checkpoint if provided

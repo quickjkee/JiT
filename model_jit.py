@@ -247,7 +247,8 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8
+        in_context_start=4,
+        cls_depth=5
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -303,6 +304,8 @@ class JiT(nn.Module):
         # linear predict
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
 
+        # cls
+        self.cls_depth = cls_depth
         self.classifier = nn.Sequential(
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, num_classes)
@@ -373,15 +376,16 @@ class JiT(nn.Module):
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
 
+        # forward JiT
+        x = self.x_embedder(x)
+        x += self.pos_embed
+
         # for linear probing
         if y_cls is not None:
             y_uncond = self.y_embedder(y_cls)   
             c_uncond = t_emb + y_uncond                          
             x_uncond = x.clone()
-
-        # forward JiT
-        x = self.x_embedder(x)
-        x += self.pos_embed
+            run_cls_branch = True
 
         for i, block in enumerate(self.blocks):
             # diffusion block
@@ -392,7 +396,7 @@ class JiT(nn.Module):
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
             # cls block
-            if y_cls is not None:
+            if run_cls_branch:
                 if self.in_context_len > 0 and i == self.in_context_start:
                     in_context_tokens = y_uncond.unsqueeze(1).repeat(1, self.in_context_len, 1)
                     in_context_tokens += self.in_context_posemb
@@ -402,7 +406,7 @@ class JiT(nn.Module):
                 if i == self.cls_depth:
                     x_regs_uncond = pool_semantic_registers(x_uncond[:, :self.in_context_len].clone(), exclude_top_frac=0.15)
                     x_regs_uncond = self.classifier(x_regs_uncond)
-                    y_cls = False
+                    run_cls_branch = False
 
         x = x[:, self.in_context_len:]
 

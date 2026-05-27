@@ -51,6 +51,7 @@ class Denoiser(nn.Module):
                 proj_drop=args.proj_dropout,
                 in_context_len=args.in_context_len,
                 in_context_start=args.in_context_start,
+                cls_depth=args.cls_depth
             )
         print_trainable(self.net)
 
@@ -82,7 +83,7 @@ class Denoiser(nn.Module):
 
     def drop_labels(self, labels, drop_prob=None):
         drop_prob = self.label_drop_prob if drop_prob is None else drop_prob
-        drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
+        drop = torch.rand(labels.shape[0], device=labels.device) < drop_prob
         out = torch.where(drop, torch.full_like(labels, self.num_classes), labels)
         return out
 
@@ -92,7 +93,7 @@ class Denoiser(nn.Module):
 
     def forward(self, x, labels):
         labels_dropped = self.drop_labels(labels) if self.training else labels
-        labels_dropped_cls = self.drop_labels(labels, drop_prob=0.9)
+        labels_dropped_cls = self.drop_labels(labels, drop_prob=self.args.cls_drop_prob)
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
 
@@ -105,7 +106,7 @@ class Denoiser(nn.Module):
         loss = diffusion_loss(v, v_pred)
 
         loss_cls = self.loss_cls(x_cls, labels)
-        loss = loss + 0.03 * loss_cls
+        loss = loss + self.args.cls_loss_weight * loss_cls
 
         return loss
 
