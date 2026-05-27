@@ -105,14 +105,7 @@ class Denoiser(nn.Module):
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         loss_dm = diffusion_loss(v, v_pred)
 
-        B, K, C = x_cls.shape
-        targets = labels[:, None].expand(-1, K)
-
-        loss_cls = self.loss_cls(
-            x_cls.permute(0, 2, 1),  # [B, C, K]
-            targets,                # [B, K]
-        )
-
+        loss_cls = self.loss_cls(x_cls, labels)
         loss = loss_dm + self.args.cls_loss_weight * loss_cls
 
         return loss, loss_dm, loss_cls

@@ -14,22 +14,31 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
-def select_semantic_registers(regs, exclude_top_frac=0.15):
+def pool_semantic_registers(regs, exclude_top_frac=0.25, eps=1e-6):
     """
     regs: [B, R, D]
-    returns: [B, K, D], excluding highest-norm sink-like tokens
+    returns: [B, D]
+
+    Excludes highest-norm registers per sample, then averages the rest.
     """
     B, R, D = regs.shape
 
+    norms = regs.norm(dim=-1)  # [B, R]
+
+    # number of tokens to keep
     keep_k = max(1, int(R * (1.0 - exclude_top_frac)))
 
-    norms = regs.norm(dim=-1)  # [B, R]
-    keep_idx = norms.topk(k=keep_k, dim=1, largest=False).indices  # lowest-norm tokens
+    # keep lowest/mid norm tokens, exclude largest norm sinks
+    keep_idx = norms.topk(k=keep_k, dim=1, largest=False).indices  # [B, keep_k]
 
     batch_idx = torch.arange(B, device=regs.device)[:, None]
-    regs_keep = regs[batch_idx, keep_idx]  # [B, K, D]
+    regs_keep = regs[batch_idx, keep_idx]  # [B, keep_k, D]
 
-    return regs_keep
+    # normalize before pooling so magnitude does not dominate
+    regs_keep = F.normalize(regs_keep.float(), dim=-1, eps=eps)
+    pooled = regs_keep.mean(dim=1)
+
+    return pooled
 
 
 class BottleneckPatchEmbed(nn.Module):
@@ -397,9 +406,9 @@ class JiT(nn.Module):
                 x_uncond = block(x_uncond, c_uncond, rope)
 
                 if i == self.cls_depth:
-                    x_regs_uncond = select_semantic_registers(
+                    x_regs_uncond = pool_semantic_registers(
                         x_uncond[:, :self.in_context_len],
-                        exclude_top_frac=0.15,
+                        exclude_top_frac=0.2,
                     )
                     x_regs_uncond = self.classifier(x_regs_uncond)
                     run_cls_branch = False
