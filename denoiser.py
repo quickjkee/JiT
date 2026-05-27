@@ -95,18 +95,41 @@ class Denoiser(nn.Module):
         return torch.sigmoid(z)
 
     def forward(self, x, labels):
-        labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
 
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred = self.net(z, t.flatten(), labels_dropped)
-        v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-        loss = diffusion_loss(v, v_pred)
+        t_flat = t.flatten()
+        null_labels = torch.full_like(labels, self.num_classes)
 
-        return loss
+        # conditional branch: labels + registers
+        x_pred_cond = self.net(
+            z,
+            t_flat,
+            labels,
+            use_registers=True,
+        )
+
+        # unconditional branch: null labels + no registers
+        x_pred_uncond = self.net(
+            z,
+            t_flat,
+            null_labels,
+            use_registers=False,
+        )
+
+        v_pred_cond = (x_pred_cond - z) / (1 - t).clamp_min(self.t_eps)
+        v_pred_uncond = (x_pred_uncond - z) / (1 - t).clamp_min(self.t_eps)
+
+        loss_cond = diffusion_loss(v, v_pred_cond)
+        loss_uncond = diffusion_loss(v, v_pred_uncond)
+
+        p_uncond = self.label_drop_prob
+        loss = (1.0 - p_uncond) * loss_cond + p_uncond * loss_uncond
+
+        return loss, loss_cond, loss_uncond
 
     @torch.no_grad()
     def generate(self, labels):
@@ -134,11 +157,11 @@ class Denoiser(nn.Module):
     @torch.no_grad()
     def _forward_sample(self, z, t, labels):
         # conditional
-        x_cond = self.net(z, t.flatten(), labels)
+        x_cond = self.net(z, t.flatten(), labels, use_registers=True)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes))
+        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), use_registers=False,)
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval

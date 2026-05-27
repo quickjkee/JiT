@@ -330,38 +330,32 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y):
-        """
-        x: (N, C, H, W)
-        t: (N,)
-        y: (N,)
-        """
-        # class and time embeddings
+    def forward(self, x, t, y, use_registers=True):
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
 
-        # forward JiT
         x = self.x_embedder(x)
-        x += self.pos_embed
+        x = x + self.pos_embed
 
         for i, block in enumerate(self.blocks):
-            # in-context
-            if self.in_context_len > 0 and i == self.in_context_start:
+            if use_registers and self.in_context_len > 0 and i == self.in_context_start:
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens += self.in_context_posemb
+                in_context_tokens = in_context_tokens + self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
-                
-                #register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
-                #x = torch.cat([register_tokens, x], dim=1)
-                
-            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
-        x = x[:, self.in_context_len:]
+            if use_registers and i >= self.in_context_start:
+                rope = self.feat_rope_incontext
+            else:
+                rope = self.feat_rope
+
+            x = block(x, c, rope)
+
+        if use_registers:
+            x = x[:, self.in_context_len:]
 
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
-
         return output
 
 
