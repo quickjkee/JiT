@@ -14,18 +14,6 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
-class SimpleHead(nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super(SimpleHead, self).__init__()
-        self.linear1 = nn.Linear(in_dim, in_dim+out_dim)
-        self.linear2 = nn.Linear(in_dim+out_dim, out_dim)
-        self.act = nn.SiLU()
-    def forward(self, x):
-        x=self.linear1(x)
-        x=self.linear2(self.act(x))
-        return x
-
-
 class BottleneckPatchEmbed(nn.Module):
     """ Image to Patch Embedding
     """
@@ -258,6 +246,8 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
+            #self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+            #torch.nn.init.normal_(self.register_tokens, std=.02)
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
@@ -285,9 +275,6 @@ class JiT(nn.Module):
 
         # linear predict
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
-
-        # sra head
-        self.ap_head = SimpleHead(hidden_size, hidden_size)
 
         self.initialize_weights()
 
@@ -343,7 +330,7 @@ class JiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, y, out_layer_sra=None):
+    def forward(self, x, t, y):
         """
         x: (N, C, H, W)
         t: (N,)
@@ -364,10 +351,10 @@ class JiT(nn.Module):
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
-
-            if out_layer_sra is not None and i == out_layer_sra:
-                out_registers = self.ap_head(x[:, :self.in_context_len]) if self.training else x[:, :self.in_context_len]
-
+                
+                #register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
+                #x = torch.cat([register_tokens, x], dim=1)
+                
             x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
 
         x = x[:, self.in_context_len:]
@@ -375,10 +362,7 @@ class JiT(nn.Module):
         x = self.final_layer(x, c)
         output = self.unpatchify(x, self.patch_size)
 
-        if out_layer_sra is None:
-            return output
-        else:
-            return output, out_registers
+        return output
 
 
 def JiT_B_16(**kwargs):

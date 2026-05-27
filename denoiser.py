@@ -3,7 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from model_jit import JiT_models
-from torch.nn.functional import smooth_l1_loss
+from torchvision.transforms import Normalize
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 def print_trainable(model):
@@ -35,12 +36,25 @@ def diffusion_loss(v, v_pred):
     return loss
 
 
-def repa_loss(dino_feats, x_mid, t=None):
-    dino_feats = F.normalize(dino_feats, dim=-1) # [B,T,D]
-    x_mid = F.normalize(x_mid, dim=-1) # [B,T,D]
-    cos_sim = (dino_feats * x_mid).sum(dim=-1)    # [B,T]
-    loss_repa = -cos_sim.mean(dim=(1)).mean()
-    return loss_repa
+def select_semantic_registers(regs, exclude_top_frac=0.15):
+    """
+    regs: [B, R, D]
+    returns: [B, K, D], excluding highest-norm tokens per sample
+    """
+    B, R, D = regs.shape
+    keep_k = max(1, int(R * (1.0 - exclude_top_frac)))
+
+    norms = regs.norm(dim=-1)  # [B, R]
+    keep_idx = norms.topk(k=keep_k, dim=1, largest=False).indices
+
+    batch_idx = torch.arange(B, device=regs.device)[:, None]
+    return regs[batch_idx, keep_idx]
+
+def disp_loss(z): # Dispersive Loss implementation (InfoNCE-L2 variant)
+    z = z.reshape((z.shape[0],-1)) # flatten
+    diff = torch.nn.functional.pdist(z).pow(2)/z.shape[1] # pairwise distance
+    diff = torch.concat((diff, diff, torch.zeros(z.shape[0]).cuda()))  # match JAX implementation of full BxB matrix
+    return torch.log(torch.exp(-diff).mean()) # calculate loss
 
 
 class Denoiser(nn.Module):
@@ -57,7 +71,7 @@ class Denoiser(nn.Module):
                 attn_drop=args.attn_dropout,
                 proj_drop=args.proj_dropout,
                 in_context_len=args.in_context_len,
-                in_context_start=args.in_context_start
+                in_context_start=args.in_context_start,
             )
         print_trainable(self.net)
 
@@ -93,16 +107,7 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def shift_t_sra(self, t):
-        t_shift = torch.rand(t.shape, device=t.device) * 0.2
-        t_shifted = t + t_shift 
-        t_shifted = t_shifted.clamp_max(1)
-        return t_shifted
-
-    def sra_loss(self, pred, target):
-        return smooth_l1_loss(pred, target, beta=0.05)
-
-    def forward(self, x, labels, model_teacher=None):
+    def forward(self, x, labels):
         labels_dropped = self.drop_labels(labels) if self.training else labels
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
         e = torch.randn_like(x) * self.noise_scale
@@ -110,19 +115,13 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred, regs_pred = self.net(z, t.flatten(), labels_dropped, out_layer_sra=self.args.out_layer_sra_student)
+        x_pred, x_regs = self.net(z, t.flatten(), labels_dropped, return_regs_layer=5)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
-        loss = diffusion_loss(v, v_pred)
+        loss_dm = diffusion_loss(v, v_pred)
+        loss_disp = disp_loss(select_semantic_registers(x_regs, exclude_top_frac=0.15))
+        loss = loss_dm + 0.5 * loss_disp
 
-        if model_teacher is not None:
-            t_sra = self.shift_t_sra(t)
-            z_sra = t_sra * x + (1 - t_sra) * e
-            with torch.no_grad():
-                _, regs_target = model_teacher(z_sra, t_sra.flatten(), labels_dropped, out_layer_sra=self.args.out_layer_sra_teacher)
-            loss_sra = self.sra_loss(regs_pred, regs_target)
-            loss = loss + self.args.sra_coeff * loss_sra
-
-        return loss
+        return loss, loss_dm, loss_disp
 
     @torch.no_grad()
     def generate(self, labels):

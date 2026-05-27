@@ -34,6 +34,7 @@ def get_args_parser():
     parser.add_argument('--in_context_len', default=32, type=int)
     parser.add_argument('--reg_len', default=0, type=int)
     parser.add_argument('--in_context_start', default=4, type=int)
+    parser.add_argument('--in_context_end', default=100, type=int)
 
     # training
     parser.add_argument('--epochs', default=200, type=int)
@@ -115,11 +116,6 @@ def get_args_parser():
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='URL used to set up distributed training')
-
-    # sra
-    parser.add_argument('--out_layer_sra_student', default=4, type=int)
-    parser.add_argument('--out_layer_sra_teacher', default=10, type=int)
-    parser.add_argument('--sra_coeff', default=0.2, type=float)
 
     # overfit experiment
     parser.add_argument('--overfit', action='store_true', help='Run tiny overfit experiment instead of full training')
@@ -211,10 +207,6 @@ def main(args):
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     model_without_ddp = model.module
 
-    teacher_net = copy.deepcopy(model_without_ddp.net).to(device)
-    teacher_net.eval()
-    teacher_net.requires_grad_(False)
-
     # Set up optimizer with weight decay adjustment for bias and norm layers
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
@@ -273,7 +265,7 @@ def main(args):
         if args.distributed and os.path.exists(args.data_path):
             data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch(model, model_without_ddp, teacher_net, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
+        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
 
         # Save checkpoint periodically
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
