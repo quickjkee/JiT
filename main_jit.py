@@ -276,6 +276,13 @@ def main(args):
                 epoch=epoch,
                 epoch_name="last"
             )
+            misc.save_model(
+                args=args,
+                model_without_ddp=model_without_ddp,
+                optimizer=optimizer,
+                epoch=epoch,
+            )
+
 
         # Perform online evaluation at specified intervals
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
