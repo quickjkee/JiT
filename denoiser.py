@@ -101,33 +101,27 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        t_flat = t.flatten()
-        null_labels = torch.full_like(labels, self.num_classes)
-
-        # conditional branch: labels + registers
-        x_pred_cond = self.net(
-            z,
-            t_flat,
-            labels,
-            use_registers=True,
-        )
-
-        # unconditional branch: null labels + no registers
-        x_pred_uncond = self.net(
-            z,
-            t_flat,
-            null_labels,
-            use_registers=False,
-        )
-
-        v_pred_cond = (x_pred_cond - z) / (1 - t).clamp_min(self.t_eps)
-        v_pred_uncond = (x_pred_uncond - z) / (1 - t).clamp_min(self.t_eps)
-
-        loss_cond = diffusion_loss(v, v_pred_cond)
-        loss_uncond = diffusion_loss(v, v_pred_uncond)
-
         p_uncond = self.label_drop_prob
-        loss = (1.0 - p_uncond) * loss_cond + p_uncond * loss_uncond
+
+        # one branch per iteration
+        train_uncond = self.training and (torch.rand((), device=x.device) < p_uncond)
+
+        if train_uncond:
+            y = torch.full_like(labels, self.num_classes)
+            use_registers = False
+        else:
+            y = labels
+            use_registers = True
+
+        x_pred = self.net(
+            z,
+            t.flatten(),
+            y,
+            use_registers=use_registers,
+        )
+
+        v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
+        loss = diffusion_loss(v, v_pred)
 
         return loss
 
