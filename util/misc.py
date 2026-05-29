@@ -260,12 +260,18 @@ def save_model(args, model_without_ddp, optimizer, epoch, epoch_name=None):
     output_dir = Path(args.output_dir)
     checkpoint_path = output_dir / ('checkpoint-%s.pth' % epoch_name)
 
-    to_save = {
-        'model': model_without_ddp.state_dict(),
-        'optimizer': optimizer.state_dict(),
-        'epoch': epoch,
-        'args': args,
-    }
+    if epoch_name == 'last':
+        to_save = {
+            'model': model_without_ddp.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'epoch': epoch,
+            'args': args,
+        }
+    else:
+        to_save = {
+            'epoch': epoch,
+            'args': args,
+        }
 
     # ema
     ema_state_dict1 = copy.deepcopy(model_without_ddp.state_dict())
@@ -274,8 +280,11 @@ def save_model(args, model_without_ddp, optimizer, epoch, epoch_name=None):
         assert name in ema_state_dict1 and name in ema_state_dict2
         ema_state_dict1[name] = model_without_ddp.ema_params1[i]
         ema_state_dict2[name] = model_without_ddp.ema_params2[i]
-    to_save['model_ema1'] = ema_state_dict1
-    to_save['model_ema2'] = ema_state_dict2
+    if epoch_name == 'last':
+        to_save['model_ema1'] = ema_state_dict1
+        to_save['model_ema2'] = ema_state_dict2
+    else:
+        to_save['model_ema1'] = ema_state_dict1
 
     save_on_master(to_save, checkpoint_path)
     if is_main_process():
