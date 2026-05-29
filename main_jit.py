@@ -61,6 +61,7 @@ def get_args_parser():
     parser.add_argument('--noise_scale', default=1.0, type=float)
     parser.add_argument('--t_eps', default=5e-2, type=float)
     parser.add_argument('--label_drop_prob', default=0.1, type=float)
+    parser.add_argument('--p_drop_registers', default=0.05, type=float)
 
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',

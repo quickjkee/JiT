@@ -68,6 +68,7 @@ class Denoiser(nn.Module):
         self.args = args
 
         self.label_drop_prob = args.label_drop_prob
+        self.p_drop_registers = args.p_drop_registers
         self.P_mean = args.P_mean
         self.P_std = args.P_std
         self.t_eps = args.t_eps
@@ -101,22 +102,17 @@ class Denoiser(nn.Module):
         z = t * x + (1 - t) * e
         v = (x - z) / (1 - t).clamp_min(self.t_eps)
 
-        p_uncond = self.label_drop_prob
+        p_without_regs = self.p_drop_registers
+        labels_dropped = self.drop_labels(labels) if self.training else labels
 
         # one branch per iteration
-        train_uncond = self.training and (torch.rand((), device=x.device) < p_uncond)
-
-        if train_uncond:
-            y = torch.full_like(labels, self.num_classes)
-            use_registers = False
-        else:
-            y = labels
-            use_registers = True
+        train_without_regs = self.training and (torch.rand((), device=x.device) < p_without_regs)
+        use_registers = False if train_without_regs else True
 
         x_pred = self.net(
             z,
             t.flatten(),
-            y,
+            labels_dropped,
             use_registers=use_registers,
         )
 
@@ -155,7 +151,7 @@ class Denoiser(nn.Module):
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), use_registers=False)
+        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), use_registers=True)
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
