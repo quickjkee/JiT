@@ -84,7 +84,9 @@ class Denoiser(nn.Module):
         self.method = args.sampling_method
         self.steps = args.num_sampling_steps
         self.cfg_scale = args.cfg
+        self.reg_scale = args.reg
         self.cfg_interval = (args.interval_min, args.interval_max)
+        self.cfg_interval_reg = (args.interval_min_reg, args.interval_max_reg)
 
     def drop_labels(self, labels):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
@@ -146,20 +148,28 @@ class Denoiser(nn.Module):
 
     @torch.no_grad()
     def _forward_sample(self, z, t, labels):
-        # conditional
-        x_cond = self.net(z, t.flatten(), labels, use_registers=True)
-        v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
+        
+        # conditional, WITH registers       (A)
+        x_cond_reg = self.net(z, t.flatten(), labels, use_registers=True)
+        v_cond_reg = (x_cond_reg - z) / (1.0 - t).clamp_min(self.t_eps)
 
-        # unconditional
-        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), use_registers=True)
-        v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
+        # conditional, NO registers         (B)  -- same class, drives the register axis
+        x_cond_noreg = self.net(z, t.flatten(), labels, use_registers=False)
+        v_cond_noreg = (x_cond_noreg - z) / (1.0 - t).clamp_min(self.t_eps)
+
+        # unconditional, WITH registers     (C)  -- CFG keeps registers on both sides
+        x_uncond_reg = self.net(z, t.flatten(), torch.full_like(labels, 1000), use_registers=True)
+        v_uncond_reg = (x_uncond_reg - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
         low, high = self.cfg_interval
+        low_reg, high_reg = self.cfg_interval_reg
         interval_mask = (t < high) & ((low == 0) | (t > low))
-        cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)
+        interval_mask_reg = (t < high_reg) & ((low_reg == 0) | (t > low_reg))
+        cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)   # class weight  w_c  -> (A - C)
+        reg_scale_interval = torch.where(interval_mask_reg, self.reg_scale, 0.0)   # register weight w_r -> (A - B)
 
-        return v_uncond + cfg_scale_interval * (v_cond - v_uncond)
+        return v_uncond_reg + cfg_scale_interval * (v_cond_reg - v_uncond_reg) + reg_scale_interval * (v_cond_reg - v_cond_noreg)
 
     @torch.no_grad()
     def _euler_step(self, z, t, t_next, labels):

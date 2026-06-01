@@ -79,9 +79,15 @@ def get_args_parser():
                         help='Sampling steps')
     parser.add_argument('--cfg', default=1.0, type=float,
                         help='Classifier-free guidance factor')
+    parser.add_argument('--reg', default=1.0, type=float,
+                        help='Classifier-free guidance factor')
     parser.add_argument('--interval_min', default=0.0, type=float,
                         help='CFG interval min')
     parser.add_argument('--interval_max', default=1.0, type=float,
+                        help='CFG interval max')
+    parser.add_argument('--interval_min_reg', default=0.0, type=float,
+                        help='CFG interval min')
+    parser.add_argument('--interval_max_reg', default=1.0, type=float,
                         help='CFG interval max')
     parser.add_argument('--num_images', default=50000, type=int,
                         help='Number of images to generate')
@@ -214,17 +220,18 @@ def main(args):
     print(optimizer)
 
     # Resume from checkpoint if provided
-    checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
+    checkpoint_path = args.resume if args.resume else None
     if checkpoint_path and os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
-
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         ema_state_dict1 = checkpoint['model_ema1']
-        ema_state_dict2 = checkpoint['model_ema2']
         model_without_ddp.ema_params1 = [ema_state_dict1[name].cuda() for name, _ in model_without_ddp.named_parameters()]
-        model_without_ddp.ema_params2 = [ema_state_dict2[name].cuda() for name, _ in model_without_ddp.named_parameters()]
         print("Resumed checkpoint from", args.resume)
 
+        if 'model' in checkpoint:
+            model_without_ddp.load_state_dict(checkpoint['model'])
+        if 'model_ema2' in checkpoint:
+            ema_state_dict2 = checkpoint['model_ema2']
+            model_without_ddp.ema_params2 = [ema_state_dict2[name].cuda() for name, _ in model_without_ddp.named_parameters()]
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
             args.start_epoch = checkpoint['epoch'] + 1
