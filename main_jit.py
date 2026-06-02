@@ -79,7 +79,9 @@ def get_args_parser():
                         help='Sampling steps')
     parser.add_argument('--cfg', default=1.0, type=float,
                         help='Classifier-free guidance factor')
-    parser.add_argument('--reg', default=1.0, type=float,
+    parser.add_argument('--reg_scale', default=1.0, type=float,
+                        help='Classifier-free guidance factor')
+    parser.add_argument('--cfg_reg_scale', default=1.0, type=float,
                         help='Classifier-free guidance factor')
     parser.add_argument('--interval_min', default=0.0, type=float,
                         help='CFG interval min')

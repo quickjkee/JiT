@@ -84,7 +84,8 @@ class Denoiser(nn.Module):
         self.method = args.sampling_method
         self.steps = args.num_sampling_steps
         self.cfg_scale = args.cfg
-        self.reg_scale = args.reg
+        self.cfg_reg_scale = args.cfg_reg_scale
+        self.reg_scale = args.reg_scale
         self.cfg_interval = (args.interval_min, args.interval_max)
         self.cfg_interval_reg = (args.interval_min_reg, args.interval_max_reg)
 
@@ -183,7 +184,7 @@ class Denoiser(nn.Module):
         low_reg, high_reg = self.cfg_interval_reg
         interval_mask = (t < high) & ((low == 0) | (t > low))
         interval_mask_reg = (t < high_reg) & ((low_reg == 0) | (t > low_reg))
-        cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)   # class weight  w_c  -> (A - C)
+        cfg_scale_interval = torch.where(interval_mask, self.cfg_reg_scale, 1.0)   # class weight  w_c  -> (A - C)
         reg_scale_interval = torch.where(interval_mask_reg, self.reg_scale, 0.0)   # register weight w_r -> (A - B)
 
         return v_uncond_reg + cfg_scale_interval * (v_cond_reg - v_uncond_reg) + reg_scale_interval * (v_cond_reg - v_cond_noreg)
