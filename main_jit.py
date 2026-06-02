@@ -277,7 +277,7 @@ def main(args):
                 epoch=epoch,
                 epoch_name="last"
             )
-        if epoch % 20 == 0 or epoch + 1 == args.epochs:
+        if epoch % 10 == 0 or epoch + 1 == args.epochs:
             misc.save_model(
                 args=args,
                 model_without_ddp=model_without_ddp,

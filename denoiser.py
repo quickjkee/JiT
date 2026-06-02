@@ -147,11 +147,11 @@ class Denoiser(nn.Module):
     @torch.no_grad()
     def _forward_sample(self, z, t, labels):
         # conditional
-        x_cond = self.net(z, t.flatten(), labels, use_registers=True)
+        x_cond = self.net(z, t.flatten(), labels, use_registers=False)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # unconditional
-        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), use_registers=True)
+        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), use_registers=False)
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
