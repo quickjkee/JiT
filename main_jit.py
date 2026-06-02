@@ -106,6 +106,8 @@ def get_args_parser():
                         help='Folder that contains checkpoint to resume from')
     parser.add_argument('--save_last_freq', type=int, default=5,
                         help='Frequency (in epochs) to save checkpoints')
+    parser.add_argument('--save_freq', type=int, default=5,
+                        help='Frequency (in epochs) to save checkpoints')
     parser.add_argument('--log_freq', default=100, type=int)
     parser.add_argument('--device', default='cuda',
                         help='Device to use for training/testing')
@@ -277,7 +279,7 @@ def main(args):
                 epoch=epoch,
                 epoch_name="last"
             )
-        if epoch % 10 == 0 or epoch + 1 == args.epochs:
+        if epoch % args.save_freq == 0 or epoch + 1 == args.epochs:
             misc.save_model(
                 args=args,
                 model_without_ddp=model_without_ddp,
