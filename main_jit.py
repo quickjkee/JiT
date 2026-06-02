@@ -292,7 +292,10 @@ def main(args):
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
             with torch.no_grad():
-                evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
+                evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, 
+                         log_writer=log_writer, use_registers=True)
+                evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, 
+                         log_writer=log_writer, use_registers=False)
             if 'Dino' in args.model:
                 evaluate_linear_probing(model_without_ddp.net, args, device=device)
             torch.cuda.empty_cache()
