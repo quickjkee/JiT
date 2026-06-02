@@ -85,7 +85,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
             break
 
 
-def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, use_registers=True):
+def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, use_registers=True, do_cfg_reg=False):
 
     model_without_ddp.eval()
     world_size = misc.get_world_size()
@@ -129,7 +129,7 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, use
         labels_gen = torch.Tensor(labels_gen).long().cuda()
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            sampled_images = model_without_ddp.generate(labels_gen, use_registers)
+            sampled_images = model_without_ddp.generate(labels_gen, use_registers, do_cfg_reg)
 
         torch.distributed.barrier()
 

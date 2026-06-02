@@ -79,9 +79,15 @@ def get_args_parser():
                         help='Sampling steps')
     parser.add_argument('--cfg', default=1.0, type=float,
                         help='Classifier-free guidance factor')
+    parser.add_argument('--reg', default=1.0, type=float,
+                        help='Classifier-free guidance factor')
     parser.add_argument('--interval_min', default=0.0, type=float,
                         help='CFG interval min')
     parser.add_argument('--interval_max', default=1.0, type=float,
+                        help='CFG interval max')
+    parser.add_argument('--interval_min_reg', default=0.0, type=float,
+                        help='CFG interval min')
+    parser.add_argument('--interval_max_reg', default=1.0, type=float,
                         help='CFG interval max')
     parser.add_argument('--num_images', default=50000, type=int,
                         help='Number of images to generate')
@@ -268,8 +274,6 @@ def main(args):
         if args.distributed and os.path.exists(args.data_path):
             data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
-
         # Save checkpoint periodically
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
             misc.save_model(
@@ -287,7 +291,6 @@ def main(args):
                 epoch=epoch,
             )
 
-
         # Perform online evaluation at specified intervals
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
@@ -296,12 +299,16 @@ def main(args):
                          log_writer=log_writer, use_registers=True)
                 evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, 
                          log_writer=log_writer, use_registers=False)
+                evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, 
+                         log_writer=log_writer, use_registers=True, do_cfg_reg=True)
             if 'Dino' in args.model:
                 evaluate_linear_probing(model_without_ddp.net, args, device=device)
             torch.cuda.empty_cache()
 
         if misc.is_main_process() and log_writer is not None:
             log_writer.flush()
+
+        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
