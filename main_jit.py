@@ -77,6 +77,7 @@ def get_args_parser():
                         help='ODE samping method')
     parser.add_argument('--num_sampling_steps', default=50, type=int,
                         help='Sampling steps')
+    parser.add_argument('--forward_type', default='rg', type=str)
     parser.add_argument('--cfg', default=1.0, type=float,
                         help='Classifier-free guidance factor')
     parser.add_argument('--rg', default=1.0, type=float,
@@ -249,7 +250,7 @@ def main(args):
             torch.manual_seed(seed)
             with torch.no_grad():
                 evaluate(model_without_ddp, args, 0, batch_size=args.gen_bsz, log_writer=log_writer,
-                         forward_fn_type='rg')
+                         forward_fn_type=args.forward_type)
         return
 
     # Toy overfit experiment

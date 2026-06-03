@@ -20,6 +20,7 @@ PORT=29570
 CFG_LIST="2.0"                       # class weights w_c
 REG_LIST="3.5"                     # register weights w_r (reg=0 baseline added per cfg)
 BAND_LIST="0.03:0.9"  # interval_min_reg:interval_max_reg
+FORWARD_TYPE="rg"  # interval_min_reg:interval_max_reg
 # ----------------------------------------------
 
 # ---------------- CLI overrides ---------------
@@ -33,7 +34,7 @@ for arg in "$@"; do
   esac
 done
 echo "CKPT=$CKPT | NUM_IMAGES=$NUM_IMAGES | GPUS=$GPUS"
-echo "CFG_LIST=[$CFG_LIST] REG_LIST=[$REG_LIST] BAND_LIST=[$BAND_LIST]"
+echo "CFG_LIST=[$CFG_LIST] REG_LIST=[$REG_LIST] BAND_LIST=[$BAND_LIST] FORWARD_TYPE=[$FORWARD_TYPE]"
 # ----------------------------------------------
 
 run_one () {   # args: CFG REG RMIN RMAX
@@ -44,6 +45,7 @@ run_one () {   # args: CFG REG RMIN RMAX
         --model "$MODEL" --img_size $IMG --noise_scale 1.0 \
         --gen_bsz $GEN_BSZ --num_images $NUM_IMAGES \
         --cfg $CFG --rg $REG \
+        --forward_type $FORWARD_TYPE \
         --interval_min $CLASS_MIN --interval_max $CLASS_MAX \
         --interval_min_rg $RMIN --interval_max_rg $RMAX \
         --output_dir "$SCRATCH" --resume "$CKPT" \
