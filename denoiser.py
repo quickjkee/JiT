@@ -84,9 +84,9 @@ class Denoiser(nn.Module):
         self.method = args.sampling_method
         self.steps = args.num_sampling_steps
         self.cfg_scale = args.cfg
-        self.reg_scale = args.reg
+        self.rg_scale = args.rg
         self.cfg_interval = (args.interval_min, args.interval_max)
-        self.cfg_interval_reg = (args.interval_min_reg, args.interval_max_reg)
+        self.rg_interval = (args.interval_min_rg, args.interval_max_rg)
 
     def drop_labels(self, labels):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
@@ -124,7 +124,7 @@ class Denoiser(nn.Module):
         return loss
 
     @torch.no_grad()
-    def generate(self, labels):
+    def generate(self, labels, forward_fn_type='cfg'):
         device = labels.device
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
@@ -137,18 +137,26 @@ class Denoiser(nn.Module):
         else:
             raise NotImplementedError
 
+        if forward_fn_type == 'cfg':
+            forward_fn = self._forward_sample_cfg
+        elif forward_fn_type == 'rg':
+            forward_fn = self._forward_sample_rg
+        elif forward_fn_type == 'cfg_rg':
+            forward_fn = self._forward_sample_cfg_rg
+        else:
+            raise NotImplementedError
+
         # ode
         for i in range(self.steps - 1):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            z = stepper(z, t, t_next, labels)
+            z = stepper(z, t, t_next, labels, forward_fn)
         # last step euler
-        z = self._euler_step(z, timesteps[-2], timesteps[-1], labels)
+        z = self._euler_step(z, timesteps[-2], timesteps[-1], labels, forward_fn)
         return z
 
     @torch.no_grad()
-    def _forward_sample(self, z, t, labels):
-        
+    def _forward_sample_cfg_rg(self, z, t, labels):
         # conditional, WITH registers       (A)
         x_cond_reg = self.net(z, t.flatten(), labels, use_registers=True)
         v_cond_reg = (x_cond_reg - z) / (1.0 - t).clamp_min(self.t_eps)
@@ -163,26 +171,60 @@ class Denoiser(nn.Module):
 
         # cfg interval
         low, high = self.cfg_interval
-        low_reg, high_reg = self.cfg_interval_reg
+        low_rg, high_rg = self.rg_interval
         interval_mask = (t < high) & ((low == 0) | (t > low))
-        interval_mask_reg = (t < high_reg) & ((low_reg == 0) | (t > low_reg))
+        interval_mask_reg = (t < high_rg) & ((low_rg == 0) | (t > low_rg))
         cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)   # class weight  w_c  -> (A - C)
-        reg_scale_interval = torch.where(interval_mask_reg, self.reg_scale, 0.0)   # register weight w_r -> (A - B)
+        reg_scale_interval = torch.where(interval_mask_reg, self.rg_scale, 0.0)   # register weight w_r -> (A - B)
 
         return v_uncond_reg + cfg_scale_interval * (v_cond_reg - v_uncond_reg) + reg_scale_interval * (v_cond_reg - v_cond_noreg)
 
     @torch.no_grad()
-    def _euler_step(self, z, t, t_next, labels):
-        v_pred = self._forward_sample(z, t, labels)
+    def _forward_sample_cfg(self, z, t, labels):
+        # conditional
+        x_cond = self.net(z, t.flatten(), labels, use_registers=True)
+        v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
+
+        # unconditional
+        x_uncond = self.net(z, t.flatten(), torch.full_like(labels, self.num_classes), use_registers=True)
+        v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
+
+        # cfg interval
+        low, high = self.cfg_interval
+        interval_mask = (t < high) & ((low == 0) | (t > low))
+        cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)
+
+        return v_uncond + cfg_scale_interval * (v_cond - v_uncond)
+
+    @torch.no_grad()
+    def _forward_sample_rg(self, z, t, labels):
+        # conditional
+        x_cond = self.net(z, t.flatten(), labels, use_registers=True)
+        v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
+
+        # unconditional
+        x_uncond = self.net(z, t.flatten(), labels, use_registers=False)
+        v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
+
+        # cfg interval
+        low, high = self.rg_interval
+        interval_mask = (t < high) & ((low == 0) | (t > low))
+        cfg_scale_interval = torch.where(interval_mask, self.rg_scale, 1.0)
+
+        return v_uncond + cfg_scale_interval * (v_cond - v_uncond)
+
+    @torch.no_grad()
+    def _euler_step(self, z, t, t_next, labels, forward_fn):
+        v_pred = forward_fn(z, t, labels)
         z_next = z + (t_next - t) * v_pred
         return z_next
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, labels):
-        v_pred_t = self._forward_sample(z, t, labels)
+    def _heun_step(self, z, t, t_next, labels, forward_fn):
+        v_pred_t = forward_fn(z, t, labels)
 
         z_next_euler = z + (t_next - t) * v_pred_t
-        v_pred_t_next = self._forward_sample(z_next_euler, t_next, labels)
+        v_pred_t_next = forward_fn(z_next_euler, t_next, labels)
 
         v_pred = 0.5 * (v_pred_t + v_pred_t_next)
         z_next = z + (t_next - t) * v_pred

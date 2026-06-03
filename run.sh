@@ -16,9 +16,9 @@ PORT=29570
 # ----------------------------------------------
 
 # ---------------- sweep grids -----------------
-CFG_LIST="2.0 2.3 2.5 2.8 2.9 3.0 3.1 3.2"                       # class weights w_c
-REG_LIST="1 1.3 1.5 1.8 2 2.2 2.5"                     # register weights w_r (reg=0 baseline added per cfg)
-BAND_LIST="0.0:1.0 0.1:1.0 0.05:1.0"  # interval_min_reg:interval_max_reg
+CFG_LIST="2.0"                       # class weights w_c
+REG_LIST="1 1.5 2 2.5 3 3.5"                     # register weights w_r (reg=0 baseline added per cfg)
+BAND_LIST="0.0:1.0 0.1:1.0 0.03:0.9"  # interval_min_reg:interval_max_reg
 # ----------------------------------------------
 
 # ---------------- CLI overrides ---------------
@@ -42,9 +42,9 @@ run_one () {   # args: CFG REG RMIN RMAX
   FID=$(torchrun --nproc_per_node=$GPUS --nnodes=1 --node_rank=0 --master_port=$PORT main_jit.py \
         --model "$MODEL" --img_size $IMG --noise_scale 1.0 \
         --gen_bsz $GEN_BSZ --num_images $NUM_IMAGES \
-        --cfg $CFG --reg $REG \
+        --cfg $CFG --rg $REG \
         --interval_min $CLASS_MIN --interval_max $CLASS_MAX \
-        --interval_min_reg $RMIN --interval_max_reg $RMAX \
+        --interval_min_rg $RMIN --interval_max_rg $RMAX \
         --output_dir "$SCRATCH" --resume "$CKPT" \
         --data_path None --evaluate_gen 2>&1 | grep -aoP 'FID:\s*\K[0-9.]+' | tail -1)
   printf 'cfg=%-4s reg=%-4s band=%s-%s  FID=%s\n' "$CFG" "$REG" "$RMIN" "$RMAX" "${FID:-NA}"
