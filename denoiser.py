@@ -183,7 +183,7 @@ class Denoiser(nn.Module):
         low, high = self.cfg_interval
         low_rg, high_rg = self.rg_interval
         interval_mask = (t < high) & ((low == 0) | (t > low))
-        interval_mask_reg = (t < high_rg) & ((low_rg == 0) | (t > high_rg))
+        interval_mask_reg = (t < high_rg) & ((low_rg == 0) | (t > low_rg))
         cfg_scale_interval = torch.where(interval_mask, self.cfg_rg_scale, 1.0)   # class weight  w_c  -> (A - C)
         reg_scale_interval = torch.where(interval_mask_reg, self.rg_scale, 0.0)   # register weight w_r -> (A - B)
 
