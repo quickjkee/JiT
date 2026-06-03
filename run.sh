@@ -18,7 +18,7 @@ PORT=29570
 # REG_LIST="1.5 2.0 2.5 2.8 3 3.2 3.5 3.8 4.0"     
 # ---------------- sweep grids -----------------
 CFG_LIST="2.0"                       # class weights w_c
-REG_LIST="1.5 2.0 3.8 4.0"                     # register weights w_r (reg=0 baseline added per cfg)
+REG_LIST="3.5"                     # register weights w_r (reg=0 baseline added per cfg)
 BAND_LIST="0.03:0.9"  # interval_min_reg:interval_max_reg
 # ----------------------------------------------
 
