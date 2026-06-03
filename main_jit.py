@@ -81,6 +81,8 @@ def get_args_parser():
                         help='Classifier-free guidance factor')
     parser.add_argument('--rg_scale', default=1.0, type=float,
                         help='Classifier-free guidance factor')
+    parser.add_argument('--rg_scale_alone', default=1.0, type=float,
+                        help='Classifier-free guidance factor')
     parser.add_argument('--cfg_rg_scale', default=1.0, type=float,
                         help='Classifier-free guidance factor')
     parser.add_argument('--interval_min', default=0.0, type=float,
@@ -90,6 +92,10 @@ def get_args_parser():
     parser.add_argument('--interval_min_rg', default=0.0, type=float,
                         help='CFG interval min')
     parser.add_argument('--interval_max_rg', default=1.0, type=float,
+                        help='CFG interval max')
+    parser.add_argument('--interval_min_rg_alone', default=0.0, type=float,
+                        help='CFG interval min')
+    parser.add_argument('--interval_max_rg_alone', default=1.0, type=float,
                         help='CFG interval max')
     parser.add_argument('--num_images', default=50000, type=int,
                         help='Number of images to generate')

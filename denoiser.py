@@ -86,8 +86,10 @@ class Denoiser(nn.Module):
         self.cfg_scale = args.cfg
         self.cfg_rg_scale = args.cfg_rg_scale
         self.rg_scale = args.rg_scale
+        self.rg_scale = args.rg_scale_alone
         self.cfg_interval = (args.interval_min, args.interval_max)
-        self.cfg_interval_rg = (args.interval_min_rg, args.interval_max_rg)
+        self.rg_interval = (args.interval_min_rg, args.interval_max_rg)
+        self.rg_alone_interval = (args.interval_min_rg_alone, args.interval_max_rg_alone)
 
     def drop_labels(self, labels):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
@@ -184,9 +186,9 @@ class Denoiser(nn.Module):
         v_uncond = (x_uncond - z) / (1.0 - t).clamp_min(self.t_eps)
 
         # cfg interval
-        low, high = self.cfg_interval
+        low, high = self.rg_alone_interval
         interval_mask = (t < high) & ((low == 0) | (t > low))
-        cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)
+        cfg_scale_interval = torch.where(interval_mask, self.rg_alone_scale, 1.0)
 
         return v_uncond + cfg_scale_interval * (v_cond - v_uncond)
 
@@ -206,7 +208,7 @@ class Denoiser(nn.Module):
 
         # cfg interval
         low, high = self.cfg_interval
-        low_rg, high_rg = self.cfg_interval_rg
+        low_rg, high_rg = self.rg_interval
         interval_mask = (t < high) & ((low == 0) | (t > low))
         interval_mask_reg = (t < high_rg) & ((low_rg == 0) | (t > high_rg))
         cfg_scale_interval = torch.where(interval_mask, self.cfg_rg_scale, 1.0)   # class weight  w_c  -> (A - C)
