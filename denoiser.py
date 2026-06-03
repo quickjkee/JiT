@@ -86,7 +86,7 @@ class Denoiser(nn.Module):
         self.cfg_scale = args.cfg
         self.cfg_rg_scale = args.cfg_rg_scale
         self.rg_scale = args.rg_scale
-        self.rg_scale = args.rg_scale_alone
+        self.rg_alone_scale = args.rg_alone_scale
         self.cfg_interval = (args.interval_min, args.interval_max)
         self.rg_interval = (args.interval_min_rg, args.interval_max_rg)
         self.rg_alone_interval = (args.interval_min_rg_alone, args.interval_max_rg_alone)

@@ -81,7 +81,7 @@ def get_args_parser():
                         help='Classifier-free guidance factor')
     parser.add_argument('--rg_scale', default=1.0, type=float,
                         help='Classifier-free guidance factor')
-    parser.add_argument('--rg_scale_alone', default=1.0, type=float,
+    parser.add_argument('--rg_alone_scale', default=1.0, type=float,
                         help='Classifier-free guidance factor')
     parser.add_argument('--cfg_rg_scale', default=1.0, type=float,
                         help='Classifier-free guidance factor')
