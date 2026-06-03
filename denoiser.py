@@ -84,10 +84,10 @@ class Denoiser(nn.Module):
         self.method = args.sampling_method
         self.steps = args.num_sampling_steps
         self.cfg_scale = args.cfg
-        self.cfg_reg_scale = args.cfg_reg_scale
-        self.reg_scale = args.reg_scale
+        self.cfg_rg_scale = args.cfg_rg_scale
+        self.rg_scale = args.rg_scale
         self.cfg_interval = (args.interval_min, args.interval_max)
-        self.cfg_interval_reg = (args.interval_min_reg, args.interval_max_reg)
+        self.cfg_interval_rg = (args.interval_min_rg, args.interval_max_rg)
 
     def drop_labels(self, labels):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
@@ -125,12 +125,12 @@ class Denoiser(nn.Module):
         return loss
 
     @torch.no_grad()
-    def generate(self, labels, use_registers=False, do_cfg_reg=False):
+    def generate(self, labels, use_registers=False, do_cfg_rg=False):
         device = labels.device
         bsz = labels.size(0)
         z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
         timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
-        forward = self._forward_sample_cfg_reg if do_cfg_reg else self._forward_sample
+        forward = self._forward_sample_cfg_rg if do_cfg_rg else self._forward_sample_cfg
 
         if self.method == "euler":
             stepper = self._euler_step
@@ -149,7 +149,7 @@ class Denoiser(nn.Module):
         return z
 
     @torch.no_grad()
-    def _forward_sample(self, z, t, labels, use_registers):
+    def _forward_sample_cfg(self, z, t, labels, use_registers):
         # conditional
         x_cond = self.net(z, t.flatten(), labels, use_registers)
         v_cond = (x_cond - z) / (1.0 - t).clamp_min(self.t_eps)
@@ -166,7 +166,7 @@ class Denoiser(nn.Module):
         return v_uncond + cfg_scale_interval * (v_cond - v_uncond)
 
     @torch.no_grad()
-    def _forward_sample_cfg_reg(self, z, t, labels, use_registers):
+    def _forward_sample_cfg_rg(self, z, t, labels, use_registers):
         # conditional, WITH registers       (A)
         x_cond_reg = self.net(z, t.flatten(), labels, use_registers=True)
         v_cond_reg = (x_cond_reg - z) / (1.0 - t).clamp_min(self.t_eps)
@@ -181,11 +181,11 @@ class Denoiser(nn.Module):
 
         # cfg interval
         low, high = self.cfg_interval
-        low_reg, high_reg = self.cfg_interval_reg
+        low_rg, high_rg = self.rg_interval
         interval_mask = (t < high) & ((low == 0) | (t > low))
-        interval_mask_reg = (t < high_reg) & ((low_reg == 0) | (t > low_reg))
-        cfg_scale_interval = torch.where(interval_mask, self.cfg_reg_scale, 1.0)   # class weight  w_c  -> (A - C)
-        reg_scale_interval = torch.where(interval_mask_reg, self.reg_scale, 0.0)   # register weight w_r -> (A - B)
+        interval_mask_reg = (t < high_rg) & ((low_rg == 0) | (t > high_rg))
+        cfg_scale_interval = torch.where(interval_mask, self.cfg_rg_scale, 1.0)   # class weight  w_c  -> (A - C)
+        reg_scale_interval = torch.where(interval_mask_reg, self.rg_scale, 0.0)   # register weight w_r -> (A - B)
 
         return v_uncond_reg + cfg_scale_interval * (v_cond_reg - v_uncond_reg) + reg_scale_interval * (v_cond_reg - v_cond_noreg)
 

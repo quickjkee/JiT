@@ -79,17 +79,17 @@ def get_args_parser():
                         help='Sampling steps')
     parser.add_argument('--cfg', default=1.0, type=float,
                         help='Classifier-free guidance factor')
-    parser.add_argument('--reg_scale', default=1.0, type=float,
+    parser.add_argument('--rg_scale', default=1.0, type=float,
                         help='Classifier-free guidance factor')
-    parser.add_argument('--cfg_reg_scale', default=1.0, type=float,
+    parser.add_argument('--cfg_rg_scale', default=1.0, type=float,
                         help='Classifier-free guidance factor')
     parser.add_argument('--interval_min', default=0.0, type=float,
                         help='CFG interval min')
     parser.add_argument('--interval_max', default=1.0, type=float,
                         help='CFG interval max')
-    parser.add_argument('--interval_min_reg', default=0.0, type=float,
+    parser.add_argument('--interval_min_rg', default=0.0, type=float,
                         help='CFG interval min')
-    parser.add_argument('--interval_max_reg', default=1.0, type=float,
+    parser.add_argument('--interval_max_rg', default=1.0, type=float,
                         help='CFG interval max')
     parser.add_argument('--num_images', default=50000, type=int,
                         help='Number of images to generate')
@@ -300,9 +300,7 @@ def main(args):
                 evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, 
                          log_writer=log_writer, use_registers=True)
                 evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, 
-                         log_writer=log_writer, use_registers=False)
-                evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, 
-                         log_writer=log_writer, use_registers=True, do_cfg_reg=True)
+                         log_writer=log_writer, use_registers=True, do_cfg_rg=True)
             if 'Dino' in args.model:
                 evaluate_linear_probing(model_without_ddp.net, args, device=device)
             torch.cuda.empty_cache()
