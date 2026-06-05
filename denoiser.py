@@ -87,7 +87,7 @@ class Denoiser(nn.Module):
         self.cfg_rg_scale = args.cfg_rg_scale
         self.rg_scale = args.rg_scale
         self.cfg_interval = (args.interval_min, args.interval_max)
-        self.cfg_interval_rg = (args.interval_min_rg, args.interval_max_rg)
+        self.rg_interval = (args.interval_min_rg, args.interval_max_rg)
 
     def drop_labels(self, labels):
         drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob
