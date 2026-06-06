@@ -345,7 +345,7 @@ class JiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             if use_registers and self.in_context_len > 0 and i == self.in_context_start:
-                if self.do_y_incontext:
+                if self.do_in_context:
                     in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                     in_context_tokens = in_context_tokens + self.in_context_posemb
                     x = torch.cat([in_context_tokens, x], dim=1)
