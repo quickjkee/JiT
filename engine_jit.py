@@ -39,6 +39,10 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 20
 
+    accum_iter = getattr(args, 'grad_accum', 1)
+    # number of optimizer steps per epoch (lr schedule is keyed on optimizer steps, not micro-batches)
+    opt_steps_per_epoch = len(data_loader) // accum_iter
+
     optimizer.zero_grad()
 
     if log_writer is not None:
@@ -46,8 +50,10 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
     print(len(data_loader))
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        # per iteration (instead of per epoch) lr scheduler
-        lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+        # per optimizer-step (instead of per epoch) lr scheduler
+        if data_iter_step % accum_iter == 0:
+            opt_step = data_iter_step // accum_iter
+            lr_sched.adjust_learning_rate(optimizer, opt_step / opt_steps_per_epoch + epoch, args)
 
         x, labels = unpack_batch(batch, device, args=args)
         labels = labels.to(device, non_blocking=True)
@@ -60,13 +66,22 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
             print("Loss is {}, stopping training".format(loss_value))
             sys.exit(1)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        update_grad = (data_iter_step + 1) % accum_iter == 0
+        loss = loss / accum_iter
+        # avoid DDP gradient all-reduce on accumulation (non-boundary) steps
+        if update_grad:
+            loss.backward()
+        else:
+            with model.no_sync():
+                loss.backward()
 
-        torch.cuda.synchronize()
+        if update_grad:
+            optimizer.step()
+            optimizer.zero_grad()
 
-        model_without_ddp.update_ema()
+            torch.cuda.synchronize()
+
+            model_without_ddp.update_ema()
 
         metric_logger.update(loss=loss_value)
         lr = optimizer.param_groups[0]["lr"]

@@ -41,7 +41,9 @@ def get_args_parser():
     parser.add_argument('--warmup_epochs', type=int, default=5, metavar='N',
                         help='Epochs to warm up LR')
     parser.add_argument('--batch_size', default=128, type=int,
-                        help='Batch size per GPU (effective batch size = batch_size * # GPUs)')
+                        help='Batch size per GPU (effective batch size = batch_size * # GPUs * grad_accum)')
+    parser.add_argument('--grad_accum', default=1, type=int,
+                        help='Number of gradient accumulation steps')
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
                         help='Learning rate (absolute)')
     parser.add_argument('--blr', type=float, default=5e-5, metavar='LR',
@@ -208,7 +210,7 @@ def main(args):
 
     model.to(device)
 
-    eff_batch_size = args.batch_size * misc.get_world_size()
+    eff_batch_size = args.batch_size * args.grad_accum * misc.get_world_size()
     if args.lr is None:  # only base_lr (blr) is specified
         args.lr = args.blr * eff_batch_size / 256
 
