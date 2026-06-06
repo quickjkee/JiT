@@ -220,7 +220,8 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8
+        in_context_start=8,
+        do_in_context=True
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -232,6 +233,7 @@ class JiT(nn.Module):
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
         self.num_classes = num_classes
+        self.do_in_context = do_in_context
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -246,10 +248,13 @@ class JiT(nn.Module):
 
         # in-context cls token
         if self.in_context_len > 0:
-            #self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            #torch.nn.init.normal_(self.register_tokens, std=.02)
-            self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
-            torch.nn.init.normal_(self.in_context_posemb, std=.02)
+            if do_in_context:
+                self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+                torch.nn.init.normal_(self.in_context_posemb, std=.02)
+            else:
+                self.register_tokens = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
+                torch.nn.init.normal_(self.register_tokens, std=.02)
+
 
         # rope
         half_head_dim = hidden_size // num_heads // 2
@@ -340,9 +345,14 @@ class JiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             if use_registers and self.in_context_len > 0 and i == self.in_context_start:
-                in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
-                in_context_tokens = in_context_tokens + self.in_context_posemb
-                x = torch.cat([in_context_tokens, x], dim=1)
+                if self.do_y_incontext:
+                    in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
+                    in_context_tokens = in_context_tokens + self.in_context_posemb
+                    x = torch.cat([in_context_tokens, x], dim=1)
+                else:
+                    register_tokens = self.register_tokens.expand(x.shape[0], -1, -1)
+                    x = torch.cat([register_tokens, x], dim=1)
+
 
             if use_registers and i >= self.in_context_start:
                 rope = self.feat_rope_incontext
