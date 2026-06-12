@@ -68,12 +68,7 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
 
         update_grad = (data_iter_step + 1) % accum_iter == 0
         loss = loss / accum_iter
-        # avoid DDP gradient all-reduce on accumulation (non-boundary) steps
-        if update_grad:
-            loss.backward()
-        else:
-            with model.no_sync():
-                loss.backward()
+        loss.backward()
 
         if update_grad:
             optimizer.step()
