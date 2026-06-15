@@ -3,7 +3,9 @@
 # Just runs each option and prints FID. No CSV, no logs, no resume, no saved outputs.
 
 # ---------------- fixed config ----------------
+YT=configs/imagenet_yt_config.yaml
 GPUS=8
+NOISE_SCALE=1.0
 MODEL="JiT-B/16"
 IMG=256
 GEN_BSZ=256
@@ -42,13 +44,14 @@ run_one () {   # args: CFG REG RMIN RMAX
   rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"; PORT=$((PORT+1))
   local FID
   FID=$(torchrun --nproc_per_node=$GPUS --nnodes=1 --node_rank=0 --master_port=$PORT main_jit.py \
-        --model "$MODEL" --img_size $IMG --noise_scale 1.0 \
+        --model "$MODEL" --img_size $IMG --noise_scale $NOISE_SCALE \
         --gen_bsz $GEN_BSZ --num_images $NUM_IMAGES \
         --cfg $CFG --rg $REG \
         --forward_type $FORWARD_TYPE \
         --interval_min $CLASS_MIN --interval_max $CLASS_MAX \
         --interval_min_rg $RMIN --interval_max_rg $RMAX \
         --output_dir "$SCRATCH" --resume "$CKPT" \
+        --yt_config_path "$YT" \
         --data_path None --evaluate_gen 2>&1 | grep -aoP 'FID:\s*\K[0-9.]+' | tail -1)
   printf 'cfg=%-4s reg=%-4s band=%s-%s  FID=%s\n' "$CFG" "$REG" "$RMIN" "$RMAX" "${FID:-NA}"
 }
