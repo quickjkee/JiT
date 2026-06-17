@@ -227,7 +227,7 @@ def main(args):
     # Resume from checkpoint if provided
     checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
     if checkpoint_path and os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         model_without_ddp.load_state_dict(checkpoint['model'])
 
         ema_state_dict1 = checkpoint['model_ema1']
