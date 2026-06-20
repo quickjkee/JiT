@@ -230,7 +230,7 @@ def main(args):
     print(optimizer)
 
     # Resume from checkpoint if provided
-    checkpoint_path = os.path.join(args.resume, "checkpoint-last.pth") if args.resume else None
+    checkpoint_path = os.path.join(args.resume, "checkpoint-30.pth") if args.resume else None
     if checkpoint_path and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         model_without_ddp.load_state_dict(checkpoint['model'])
