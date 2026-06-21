@@ -4,6 +4,7 @@ import numpy as np
 import os
 import time
 from pathlib import Path
+import re
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -18,6 +19,51 @@ import copy
 from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
 from overfit_experiment import run_overfit
 from denoiser import Denoiser
+
+
+def train_only_last_jit_part(model, last_n_blocks=2, train_in_context_posemb=False):
+    """
+    Works for:
+    - Denoiser wrapper with model.net = JiT
+    - raw JiT model
+    """
+
+    # Freeze everything in the full model first
+    for name, p in model.named_parameters():
+        p.requires_grad = False
+
+    # Your training code suggests Denoiser has .net
+    jit = model.net if hasattr(model, "net") else model
+
+    assert hasattr(jit, "blocks"), "Could not find jit.blocks"
+    assert hasattr(jit, "final_layer"), "Could not find jit.final_layer"
+
+    depth = len(jit.blocks)
+    start_block = max(0, depth - last_n_blocks)
+
+    # Unfreeze last N transformer blocks
+    for i in range(start_block, depth):
+        for p in jit.blocks[i].parameters():
+            p.requires_grad = True
+
+    # Unfreeze final prediction layer
+    for p in jit.final_layer.parameters():
+        p.requires_grad = True
+
+    # Optional: also train in-context positional tokens
+    if train_in_context_posemb and hasattr(jit, "in_context_posemb"):
+        jit.in_context_posemb.requires_grad = True
+
+    print(f"Training JiT blocks [{start_block}, ..., {depth - 1}] + final_layer")
+
+    for name, p in model.named_parameters():
+        if p.requires_grad:
+            print("TRAINABLE:", name)
+
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    n_total = sum(p.numel() for p in model.parameters())
+
+    print(f"Trainable params: {n_trainable / 1e6:.3f}M / {n_total / 1e6:.3f}M")
 
 
 def get_args_parser():
@@ -207,6 +253,13 @@ def main(args):
     # Create denoiser
     model = Denoiser(args)
 
+    # Train only last part of JiT
+    train_only_last_jit_part(
+        model.net,
+        last_n_blocks=5,
+        train_in_context_posemb=False,
+    )
+
     print("Model =", model)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Number of trainable parameters: {:.6f}M".format(n_params / 1e6))
@@ -221,7 +274,7 @@ def main(args):
     print("Actual lr: {:.2e}".format(args.lr))
     print("Effective batch size: %d" % eff_batch_size)
 
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     model_without_ddp = model.module
 
     # Set up optimizer with weight decay adjustment for bias and norm layers
