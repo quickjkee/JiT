@@ -254,11 +254,11 @@ def main(args):
     model = Denoiser(args)
 
     # Train only last part of JiT
-    train_only_last_jit_part(
-        model.net,
-        last_n_blocks=5,
-        train_in_context_posemb=False,
-    )
+    #train_only_last_jit_part(
+    #    model.net,
+    #    last_n_blocks=5,
+    #    train_in_context_posemb=False,
+    #)
 
     print("Model =", model)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
