@@ -256,7 +256,7 @@ def main(args):
     # Train only last part of JiT
     train_only_last_jit_part(
         model.net,
-        last_n_blocks=10,
+        last_n_blocks=1,
         train_in_context_posemb=False,
     )
 
