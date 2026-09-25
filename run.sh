@@ -1,6 +1,6 @@
 #!/bin/bash
 # SIMPLE combined-guidance sweep:  v = C + cfg*(A-C) + reg*(A-B)
-# Just runs each option and prints FID. No CSV, no logs, no resume, no saved outputs.
+# Runs each option, streams worker output, and retains one diagnostic log per setup.
 
 # ---------------- fixed config ----------------
 YT=configs/imagenet_yt_config.yaml
@@ -18,7 +18,8 @@ FDR_MODELS=""                       # e.g. "dinov2 clip" to score fewer represen
 FDR_BSZ=64
 FDR_WEIGHTS_DIR=fd_encoders        # encoders saved by prepare_fd_encoders.py (offline)
 FDR_STATS_DIR=fid_stats/fd_repr     # reference statistics saved by prepare_fd_stats.py
-SCRATCH=here      # reused + wiped each run; nothing persisted
+SCRATCH=here      # generated images reused + wiped each run
+LOG_DIR=""       # defaults to ${SCRATCH}_logs; retained across sweep points
 PORT=29570
 # ----------------------------------------------
 
@@ -40,7 +41,10 @@ for arg in "$@"; do
     *)   echo "ignoring arg (use KEY=VALUE): $arg" ;;
   esac
 done
+LOG_DIR="${LOG_DIR:-${SCRATCH}_logs}"
+mkdir -p "$LOG_DIR" || { return 1 2>/dev/null || exit 1; }
 echo "CKPT=$CKPT | NUM_IMAGES=$NUM_IMAGES | GPUS=$GPUS"
+echo "Diagnostic logs: $LOG_DIR"
 echo "CFG_LIST=[$CFG_LIST] REG_LIST=[$REG_LIST] BAND_LIST=[$BAND_LIST] FORWARD_TYPE=[$FORWARD_TYPE]"
 if [ "$EVAL_FDR" = "1" ]; then
   echo "EVAL_FDR=1 FDR_MODELS=[${FDR_MODELS:-all}]"
@@ -57,14 +61,19 @@ fi
 
 run_one () {   # args: CFG REG RMIN RMAX
   local CFG=$1 REG=$2 RMIN=$3 RMAX=$4
-  rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"; PORT=$((PORT+1))
+  rm -rf "$SCRATCH" || return 1
+  mkdir -p "$SCRATCH" || return 1
+  PORT=$((PORT+1))
   local FDR_ARGS=""
   if [ "$EVAL_FDR" = "1" ]; then
     FDR_ARGS="--eval_fdr --fdr_bsz $FDR_BSZ --fdr_weights_dir $FDR_WEIGHTS_DIR --fdr_stats_dir $FDR_STATS_DIR"
     [ -n "$FDR_MODELS" ] && FDR_ARGS="$FDR_ARGS --fdr_models $FDR_MODELS"
   fi
-  local OUT FID FDR
-  OUT=$(torchrun --nproc_per_node=$GPUS --nnodes=1 --node_rank=0 --master_port=$PORT main_jit.py \
+  local FID FDR STATUS LOG_FILE
+  local -a PIPE_RC
+  LOG_FILE=$(mktemp "$LOG_DIR/cfg${CFG}_rg${REG}_XXXXXX.log") || return 1
+  printf 'Starting evaluation: cfg=%s reg=%s band=%s-%s log=%s\n' "$CFG" "$REG" "$RMIN" "$RMAX" "$LOG_FILE"
+  if PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 torchrun --nproc_per_node=$GPUS --nnodes=1 --node_rank=0 --master_port=$PORT main_jit.py \
         --model "$MODEL" --img_size $IMG --noise_scale $NOISE_SCALE \
         --gen_bsz $GEN_BSZ --num_images $NUM_IMAGES \
         --cfg $CFG --rg $REG \
@@ -74,9 +83,23 @@ run_one () {   # args: CFG REG RMIN RMAX
         --output_dir "$SCRATCH" --resume "$CKPT" \
         --yt_config_path "$YT" \
         $FDR_ARGS \
-        --data_path None --evaluate_gen 2>&1)
-  FID=$(printf '%s' "$OUT" | grep -aoP 'FID:\s*\K[0-9.]+' | tail -1)
-  FDR=$(printf '%s' "$OUT" | grep -aoP 'FDr\^[0-9]+:\s*\K[0-9.]+' | tail -1)
+        --data_path None --evaluate_gen 2>&1 | tee "$LOG_FILE"; then
+    PIPE_RC=("${PIPESTATUS[@]}")
+  else
+    PIPE_RC=("${PIPESTATUS[@]}")
+  fi
+  STATUS=${PIPE_RC[0]}
+  printf 'Evaluation process exited: status=%s tee_status=%s log=%s\n' "$STATUS" "${PIPE_RC[1]}" "$LOG_FILE"
+  if [ "$STATUS" -ne 0 ]; then
+    printf 'Evaluation failed (exit %s): cfg=%s reg=%s band=%s-%s log=%s\n' "$STATUS" "$CFG" "$REG" "$RMIN" "$RMAX" "$LOG_FILE" >&2
+    return "$STATUS"
+  fi
+  if [ "${PIPE_RC[1]}" -ne 0 ]; then
+    printf 'Failed to write diagnostic log: %s\n' "$LOG_FILE" >&2
+    return "${PIPE_RC[1]}"
+  fi
+  FID=$(grep -aoP 'FID:\s*\K[0-9.]+' "$LOG_FILE" | tail -1) || FID=""
+  FDR=$(grep -aoP 'FDr\^[0-9]+:\s*\K[0-9.]+' "$LOG_FILE" | tail -1) || FDR=""
   if [ "$EVAL_FDR" = "1" ]; then
     printf 'cfg=%-4s reg=%-4s band=%s-%s  FID=%-8s FDr=%s\n' "$CFG" "$REG" "$RMIN" "$RMAX" "${FID:-NA}" "${FDR:-NA}"
   else
@@ -85,12 +108,13 @@ run_one () {   # args: CFG REG RMIN RMAX
 }
 
 for CFG in $CFG_LIST; do
-  run_one "$CFG" 0 "$CLASS_MIN" "$CLASS_MAX"          # per-cfg baseline (reg=0)
+  run_one "$CFG" 0 "$CLASS_MIN" "$CLASS_MAX" || { return 1 2>/dev/null || exit 1; }  # baseline
   for REG in $REG_LIST; do
     for BAND in $BAND_LIST; do
-      run_one "$CFG" "$REG" "${BAND%:*}" "${BAND#*:}"
+      run_one "$CFG" "$REG" "${BAND%:*}" "${BAND#*:}" || { return 1 2>/dev/null || exit 1; }
     done
   done
 done
 
-rm -rf "$SCRATCH"
+rm -rf "$SCRATCH" || { return 1 2>/dev/null || exit 1; }
+printf 'Sweep complete. Diagnostic logs retained in %s\n' "$LOG_DIR"

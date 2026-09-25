@@ -10,6 +10,8 @@ import copy
 import torch
 import torch.distributed as dist
 
+from util.eval_logging import log_stage, trace_stage
+
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -238,9 +240,19 @@ def init_distributed_mode(args):
     timeout = datetime.timedelta(seconds=getattr(args, 'dist_timeout', 7200))
     torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                          world_size=args.world_size, rank=args.rank,
-                                         timeout=timeout)
+                                         timeout=timeout,
+                                         device_id=torch.device('cuda', args.gpu))
     torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
+
+
+def shutdown_distributed():
+    """Release the process group before model teardown; safe to call again on exit."""
+    if is_dist_avail_and_initialized():
+        with trace_stage('distributed.destroy_process_group'):
+            dist.destroy_process_group()
+    else:
+        log_stage('distributed.cleanup.skipped', reason='no initialized process group')
 
 
 def add_weight_decay(model, weight_decay=0, skip_list=()):
