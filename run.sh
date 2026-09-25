@@ -17,6 +17,7 @@ EVAL_FDR=0                          # 1 -> also report FD_r^6 (run prepare_fd_st
 FDR_MODELS=""                       # e.g. "dinov2 clip" to score fewer representation spaces
 FDR_BSZ=64
 FDR_WEIGHTS_DIR=fd_encoders        # encoders saved by prepare_fd_encoders.py (offline)
+FDR_STATS_DIR=fid_stats/fd_repr     # reference statistics saved by prepare_fd_stats.py
 SCRATCH=here      # reused + wiped each run; nothing persisted
 PORT=29570
 # ----------------------------------------------
@@ -41,7 +42,7 @@ for arg in "$@"; do
 done
 echo "CKPT=$CKPT | NUM_IMAGES=$NUM_IMAGES | GPUS=$GPUS"
 echo "CFG_LIST=[$CFG_LIST] REG_LIST=[$REG_LIST] BAND_LIST=[$BAND_LIST] FORWARD_TYPE=[$FORWARD_TYPE]"
-[ "$EVAL_FDR" = "1" ] && echo "EVAL_FDR=1 FDR_MODELS=[${FDR_MODELS:-all}]"
+[ "$EVAL_FDR" = "1" ] && echo "EVAL_FDR=1 FDR_MODELS=[${FDR_MODELS:-all}] FDR_WEIGHTS_DIR=$FDR_WEIGHTS_DIR FDR_STATS_DIR=$FDR_STATS_DIR"
 # ----------------------------------------------
 
 run_one () {   # args: CFG REG RMIN RMAX
@@ -49,7 +50,7 @@ run_one () {   # args: CFG REG RMIN RMAX
   rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"; PORT=$((PORT+1))
   local FDR_ARGS=""
   if [ "$EVAL_FDR" = "1" ]; then
-    FDR_ARGS="--eval_fdr --fdr_bsz $FDR_BSZ --fdr_weights_dir $FDR_WEIGHTS_DIR"
+    FDR_ARGS="--eval_fdr --fdr_bsz $FDR_BSZ --fdr_weights_dir $FDR_WEIGHTS_DIR --fdr_stats_dir $FDR_STATS_DIR"
     [ -n "$FDR_MODELS" ] && FDR_ARGS="$FDR_ARGS --fdr_models $FDR_MODELS"
   fi
   local OUT FID FDR
