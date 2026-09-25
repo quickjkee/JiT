@@ -13,6 +13,9 @@ NUM_IMAGES=50000
 CLASS_MIN=0.1                       # class-term interval
 CLASS_MAX=1.0
 CKPT=/home/quickjkee/projects/CUR/registers/checkpoints/jit/tmp/new/checkpoint-420.pth
+EVAL_FDR=0                          # 1 -> also report FD_r^6 (run prepare_fd_stats.py once)
+FDR_MODELS=""                       # e.g. "dinov2 clip" to score fewer representation spaces
+FDR_BSZ=64
 SCRATCH=here      # reused + wiped each run; nothing persisted
 PORT=29570
 # ----------------------------------------------
@@ -37,13 +40,19 @@ for arg in "$@"; do
 done
 echo "CKPT=$CKPT | NUM_IMAGES=$NUM_IMAGES | GPUS=$GPUS"
 echo "CFG_LIST=[$CFG_LIST] REG_LIST=[$REG_LIST] BAND_LIST=[$BAND_LIST] FORWARD_TYPE=[$FORWARD_TYPE]"
+[ "$EVAL_FDR" = "1" ] && echo "EVAL_FDR=1 FDR_MODELS=[${FDR_MODELS:-all}]"
 # ----------------------------------------------
 
 run_one () {   # args: CFG REG RMIN RMAX
   local CFG=$1 REG=$2 RMIN=$3 RMAX=$4
   rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"; PORT=$((PORT+1))
-  local FID
-  FID=$(torchrun --nproc_per_node=$GPUS --nnodes=1 --node_rank=0 --master_port=$PORT main_jit.py \
+  local FDR_ARGS=""
+  if [ "$EVAL_FDR" = "1" ]; then
+    FDR_ARGS="--eval_fdr --fdr_bsz $FDR_BSZ"
+    [ -n "$FDR_MODELS" ] && FDR_ARGS="$FDR_ARGS --fdr_models $FDR_MODELS"
+  fi
+  local OUT FID FDR
+  OUT=$(torchrun --nproc_per_node=$GPUS --nnodes=1 --node_rank=0 --master_port=$PORT main_jit.py \
         --model "$MODEL" --img_size $IMG --noise_scale $NOISE_SCALE \
         --gen_bsz $GEN_BSZ --num_images $NUM_IMAGES \
         --cfg $CFG --rg $REG \
@@ -52,8 +61,15 @@ run_one () {   # args: CFG REG RMIN RMAX
         --interval_min_rg $RMIN --interval_max_rg $RMAX \
         --output_dir "$SCRATCH" --resume "$CKPT" \
         --yt_config_path "$YT" \
-        --data_path None --evaluate_gen 2>&1 | grep -aoP 'FID:\s*\K[0-9.]+' | tail -1)
-  printf 'cfg=%-4s reg=%-4s band=%s-%s  FID=%s\n' "$CFG" "$REG" "$RMIN" "$RMAX" "${FID:-NA}"
+        $FDR_ARGS \
+        --data_path None --evaluate_gen 2>&1)
+  FID=$(printf '%s' "$OUT" | grep -aoP 'FID:\s*\K[0-9.]+' | tail -1)
+  FDR=$(printf '%s' "$OUT" | grep -aoP 'FDr\^[0-9]+:\s*\K[0-9.]+' | tail -1)
+  if [ "$EVAL_FDR" = "1" ]; then
+    printf 'cfg=%-4s reg=%-4s band=%s-%s  FID=%-8s FDr=%s\n' "$CFG" "$REG" "$RMIN" "$RMAX" "${FID:-NA}" "${FDR:-NA}"
+  else
+    printf 'cfg=%-4s reg=%-4s band=%s-%s  FID=%s\n' "$CFG" "$REG" "$RMIN" "$RMAX" "${FID:-NA}"
+  fi
 }
 
 for CFG in $CFG_LIST; do

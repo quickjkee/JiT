@@ -177,7 +177,7 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, for
             for name, value in fdr['fdr'].items():
                 log_writer.add_scalar('fdr_{}{}'.format(name, postfix), value, epoch)
             log_writer.add_scalar('fdr6{}'.format(postfix), fdr['fdr6'], epoch)
-            print("FDr^6: {:.4f}".format(fdr['fdr6']))
+            print("FDr^{}: {:.4f}".format(len(fdr['fdr']), fdr['fdr6']))
 
         shutil.rmtree(save_folder)
 

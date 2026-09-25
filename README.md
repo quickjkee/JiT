@@ -164,6 +164,15 @@ main_jit.py \
 --eval_fdr
 ```
 
+The sweep script takes the same switch as a KEY=VALUE override, and then prints FDr next to FID
+for every point of the sweep:
+
+```
+. run.sh CKPT=$SNAPSHOT_PATH/checkpoint-30.pth FORWARD_TYPE="cfg_rg" \
+  REG_LIST="0.8 0.9 1.0 1.1 1.2" BAND_LIST="0.1:1.0" CFG_LIST="1.4 1.5 1.6" \
+  MODEL="JiT-H/16" EVAL_FDR=1
+```
+
 Without the flag nothing changes. With it, each space is printed and logged (```fdr_dinov2```,
 ```fdr_clip```, ...) next to ```fdr6```. Options: ```--fdr_models``` to score a subset of the
 spaces, ```--fdr_stats_dir``` for the statistics directory, ```--fdr_bsz``` for the encoder batch
