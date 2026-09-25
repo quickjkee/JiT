@@ -163,8 +163,18 @@ def report_inputs(stats_dir, weights_dir=DEFAULT_WEIGHTS_DIR, models=None, verbo
     only a warning, since timm would download them if the machine has network access.
     """
     models = list(models) if models else list(DEFAULT_MODELS)
-    missing_stats, missing_weights = [], []
+    missing_stats, missing_weights, missing_arch = [], [], []
     lines = ['FD_r inputs:']
+
+    # the installed timm has to know each architecture, whether or not the weights are local
+    try:
+        import timm
+        known = set(timm.list_models())
+        lines.append('  timm {}'.format(timm.__version__))
+    except ImportError:
+        known = None
+        lines.append('  timm is not installed')
+        missing_arch = [n for n in models if n != 'inception']
 
     lines.append('  statistics dir: {}{}'.format(
         os.path.abspath(stats_dir), '' if os.path.isdir(stats_dir) else '   (does not exist)'))
@@ -185,6 +195,11 @@ def report_inputs(stats_dir, weights_dir=DEFAULT_WEIGHTS_DIR, models=None, verbo
         if name == 'inception':
             lines.append('    [ok]      {:<10} {}'.format(name, 'fid_stats/pt_inception-*.pth (in repo)'))
             continue
+        if known is not None and REPR_MODELS[name]['timm'].split('.')[0] not in known:
+            missing_arch.append(name)
+            lines.append('    [timm]    {:<10} {} is not in this timm'.format(
+                name, REPR_MODELS[name]['timm']))
+            continue
         f = encoder_file(name)
         path = os.path.join(weights_dir, f) if weights_dir else None
         if path and os.path.exists(path):
@@ -201,9 +216,13 @@ def report_inputs(stats_dir, weights_dir=DEFAULT_WEIGHTS_DIR, models=None, verbo
         lines.append('  -> no local weights for {}; on a machine without network access run '
                      'prepare_fd_encoders.py and point --fdr_weights_dir at the result.'
                      .format(', '.join(missing_weights)))
+    if missing_arch:
+        lines.append('  -> this timm cannot build {}; upgrade timm (1.0.15 or newer knows the '
+                     'SigLIP2 models) or leave those spaces out with --fdr_models.'
+                     .format(', '.join(missing_arch)))
     if verbose:
         print('\n'.join(lines), flush=True)
-    return not missing_stats
+    return not (missing_stats or missing_arch)
 
 
 def _reference(stats_dir, name):
