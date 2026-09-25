@@ -8,7 +8,6 @@ from pathlib import Path
 
 import torch
 import torch.backends.cudnn as cudnn
-from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
@@ -137,7 +136,6 @@ def get_args_parser():
                         help='Folder that contains checkpoint to resume from')
     parser.add_argument('--save_last_freq', type=int, default=5,
                         help='Frequency (in epochs) to save checkpoints')
-    parser.add_argument('--log_freq', default=100, type=int)
     parser.add_argument('--device', default='cuda',
                         help='Device to use for training/testing')
 
@@ -181,13 +179,6 @@ def main(args):
 
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
-
-    # Set up TensorBoard logging (only on main process)
-    if global_rank == 0 and args.output_dir is not None:
-        os.makedirs(args.output_dir, exist_ok=True)
-        log_writer = SummaryWriter(log_dir=args.output_dir)
-    else:
-        log_writer = None
 
     # Data augmentation transforms
     if args.evaluate_gen:
@@ -277,13 +268,10 @@ def main(args):
             torch.manual_seed(seed)
             with torch.no_grad():
                 with trace_stage('evaluate.call'):
-                    evaluate(model_without_ddp, args, 0, batch_size=args.gen_bsz, log_writer=log_writer,
+                    evaluate(model_without_ddp, args, batch_size=args.gen_bsz,
                              forward_fn_type=args.forward_type)
             log_stage('eval.rng_restore.begin')
         log_stage('eval.rng_restore.end')
-        if log_writer is not None:
-            with trace_stage('tensorboard.close'):
-                log_writer.close()
         log_stage('eval.complete')
         # Match yrELF's torchrun lifecycle: tear down while the model is still alive.
         misc.shutdown_distributed()
@@ -301,7 +289,6 @@ def main(args):
             model_without_ddp=model_without_ddp,
             optimizer=optimizer,
             device=device,
-            log_writer=log_writer
         )
         return
 
@@ -312,7 +299,7 @@ def main(args):
         if args.distributed and os.path.exists(args.data_path):
             data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
+        train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, args=args)
 
         # Save checkpoint periodically
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
@@ -336,13 +323,10 @@ def main(args):
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
             with torch.no_grad():
-                evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
+                evaluate(model_without_ddp, args, batch_size=args.gen_bsz)
             if 'Dino' in args.model:
                 evaluate_linear_probing(model_without_ddp.net, args, device=device)
             torch.cuda.empty_cache()
-
-        if misc.is_main_process() and log_writer is not None:
-            log_writer.flush()
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

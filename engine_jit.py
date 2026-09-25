@@ -33,7 +33,7 @@ def unpack_batch(batch, device, args):
     y = y.to(device, non_blocking=True)
     return x, y
 
-def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
+def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -42,8 +42,6 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
 
     optimizer.zero_grad()
 
-    if log_writer is not None:
-        print('log_dir: {}'.format(log_writer.log_dir))
     print(len(data_loader))
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
@@ -73,20 +71,11 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
         lr = optimizer.param_groups[0]["lr"]
         metric_logger.update(lr=lr)
 
-        loss_value_reduce = misc.all_reduce_mean(loss_value)
-
-        if log_writer is not None:
-            # Use epoch_1000x as the x-axis in TensorBoard to calibrate curves.
-            epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
-            if data_iter_step % args.log_freq == 0:
-                log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
-                log_writer.add_scalar('lr', lr, epoch_1000x)
-
         if data_iter_step >= len(data_loader):
             break
 
 
-def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, forward_fn_type='cfg'):
+def evaluate(model_without_ddp, args, batch_size=64, forward_fn_type='cfg'):
 
     model_without_ddp.eval()
     world_size = misc.get_world_size()
@@ -161,8 +150,8 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, for
     with trace_stage('eval.restore_model_weights'):
         model_without_ddp.load_state_dict(model_state_dict)
 
-    # compute FID and IS
-    if log_writer is not None:
+    # Score the shared image folder only on rank zero.
+    if misc.is_main_process():
         if args.img_size == 256 or args.img_size == 224:
             fid_statistics_file = 'fid_stats/jit_in256_stats.npz'
         elif args.img_size == 512:
@@ -171,9 +160,6 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, for
             raise NotImplementedError
         with trace_stage('fid.calculate', folder=save_folder):
             fid = calculate_fid(save_folder, fid_statistics_file, inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth')
-        postfix = "_cfg{}_res{}".format(model_without_ddp.cfg_scale, args.img_size)
-        with trace_stage('fid.tensorboard', value=float(fid)):
-            log_writer.add_scalar('fid{}'.format(postfix), fid, epoch)
         print("FID: {:.4f}".format(fid), flush=True)
         log_stage('fid.reported', value=float(fid), eval_fdr=getattr(args, 'eval_fdr', False))
 
@@ -188,18 +174,13 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, for
                                     fid_value=fid if args.fdr_reuse_fid else None,
                                     batch_size=args.fdr_bsz, num_images=args.fdr_num_images,
                                     weights_dir=args.fdr_weights_dir)
-            with trace_stage('fdr.tensorboard'):
-                for name, value in fdr['fdr'].items():
-                    log_stage('fdr.tensorboard.scalar', model=name, value=value)
-                    log_writer.add_scalar('fdr_{}{}'.format(name, postfix), value, epoch)
-                log_writer.add_scalar('fdr6{}'.format(postfix), fdr['fdr6'], epoch)
             print("FDr^{}: {:.4f}".format(len(fdr['fdr']), fdr['fdr6']), flush=True)
             log_stage('fdr.reported', value=fdr['fdr6'])
 
         with trace_stage('eval.remove_images', folder=save_folder):
             shutil.rmtree(save_folder)
 
-    with trace_stage('eval.final_barrier', scored_metrics=log_writer is not None):
+    with trace_stage('eval.final_barrier', scored_metrics=misc.is_main_process()):
         torch.distributed.barrier()
     log_stage('eval.before_return')
 

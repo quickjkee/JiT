@@ -69,7 +69,7 @@ def _save_debug_images(x_pred_norm, step, outdir, max_n=16):
         imageio.imwrite(os.path.join(outdir, f"{step:07d}_{i:02d}.png"), im)
 
 
-def run_overfit(args, model, model_without_ddp, optimizer, device, log_writer=None):
+def run_overfit(args, model, model_without_ddp, optimizer, device):
     """
     Overfit experiment:
       - tiny subset (args.overfit_n images)
@@ -170,9 +170,6 @@ def run_overfit(args, model, model_without_ddp, optimizer, device, log_writer=No
             if misc.is_main_process() and (step % print_freq == 0 or step == steps - 1):
                 elapsed = time.time() - start
                 print(f"[overfit] step {step:6d}/{steps}  loss {loss.item():.6f}  t={fixed_t}  time={elapsed:.1f}s")
-
-                if log_writer is not None:
-                    log_writer.add_scalar("overfit/loss", loss.item(), step)
 
                 if args.overfit_save_imgs and (step % args.overfit_img_freq == 0):
                     _save_debug_images(
