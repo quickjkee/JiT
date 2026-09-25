@@ -233,8 +233,12 @@ def init_distributed_mode(args):
     args.dist_backend = 'nccl'
     print('| distributed init (rank {}): {}, gpu {}'.format(
         args.rank, args.dist_url, args.gpu), flush=True)
+    # rank 0 computes FID (and FD_r, when asked) alone while the other ranks sit in a barrier,
+    # which is longer than NCCL's 10 minute watchdog, so give the group a generous timeout
+    timeout = datetime.timedelta(seconds=getattr(args, 'dist_timeout', 7200))
     torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                         world_size=args.world_size, rank=args.rank)
+                                         world_size=args.world_size, rank=args.rank,
+                                         timeout=timeout)
     torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
 

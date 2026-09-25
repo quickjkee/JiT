@@ -99,6 +99,9 @@ def get_args_parser():
 
     # FD_r^6: Frechet distance in six representation spaces, normalised and averaged
     # (util/fd_repr.py; run prepare_fd_stats.py once to fetch the reference statistics)
+    parser.add_argument('--dist_timeout', default=7200, type=int,
+                        help='NCCL collective timeout in seconds; the default watchdog is 600s, '
+                             'which rank 0 can exceed while it computes FID and FD_r')
     parser.add_argument('--eval_fdr', action='store_true',
                         help='also report FD_r^6 next to FID')
     parser.add_argument('--fdr_models', default=None, type=str, nargs='+',
