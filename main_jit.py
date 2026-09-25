@@ -185,7 +185,10 @@ def main(args):
         log_writer = None
 
     # Data augmentation transforms
-    if os.path.exists(args.data_path):
+    if args.evaluate_gen:
+        # generation only: nothing reads the training data, so do not build the loader
+        data_loader_train = None
+    elif os.path.exists(args.data_path):
         transform_train = transforms.Compose([
                             transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
                             transforms.RandomHorizontalFlip(),
