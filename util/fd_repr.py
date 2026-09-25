@@ -155,6 +155,57 @@ def representation_statistics(folder, name, device, batch_size=64, num_workers=8
     return feats.mean(axis=0), np.cov(feats, rowvar=False)
 
 
+def report_inputs(stats_dir, weights_dir=DEFAULT_WEIGHTS_DIR, models=None, verbose=True):
+    """
+    Log what is in the statistics and encoder directories, and whether FD_r can run from them.
+
+    Returns True when every space in `models` has its reference statistics; missing encoders are
+    only a warning, since timm would download them if the machine has network access.
+    """
+    models = list(models) if models else list(DEFAULT_MODELS)
+    missing_stats, missing_weights = [], []
+    lines = ['FD_r inputs:']
+
+    lines.append('  statistics dir: {}{}'.format(
+        os.path.abspath(stats_dir), '' if os.path.isdir(stats_dir) else '   (does not exist)'))
+    for name in models:
+        f = REPR_MODELS[name]['stats']
+        path = os.path.join(stats_dir, f)
+        if os.path.exists(path):
+            lines.append('    [ok]      {:<10} {:<60} {:>7.1f} MB'.format(
+                name, f, os.path.getsize(path) / 1e6))
+        else:
+            missing_stats.append(name)
+            lines.append('    [MISSING] {:<10} {}'.format(name, f))
+
+    lines.append('  encoder dir:    {}{}'.format(
+        os.path.abspath(weights_dir) if weights_dir else '(none)',
+        '' if weights_dir and os.path.isdir(weights_dir) else '   (does not exist)'))
+    for name in models:
+        if name == 'inception':
+            lines.append('    [ok]      {:<10} {}'.format(name, 'fid_stats/pt_inception-*.pth (in repo)'))
+            continue
+        f = encoder_file(name)
+        path = os.path.join(weights_dir, f) if weights_dir else None
+        if path and os.path.exists(path):
+            lines.append('    [ok]      {:<10} {:<60} {:>7.2f} GB'.format(
+                name, f, os.path.getsize(path) / 1e9))
+        else:
+            missing_weights.append(name)
+            lines.append('    [download] {:<9} {:<60} not found, timm would fetch it'.format(name, f))
+
+    if missing_stats:
+        lines.append('  -> cannot run: no reference statistics for {}. Run prepare_fd_stats.py '
+                     'and point --fdr_stats_dir at the result.'.format(', '.join(missing_stats)))
+    if missing_weights:
+        lines.append('  -> no local weights for {}; on a machine without network access run '
+                     'prepare_fd_encoders.py and point --fdr_weights_dir at the result.'
+                     .format(', '.join(missing_weights)))
+    if verbose:
+        print('\n'.join(lines), flush=True)
+    return not missing_stats
+
+
 def _reference(stats_dir, name):
     path = os.path.join(stats_dir, REPR_MODELS[name]['stats'])
     if not os.path.exists(path):
@@ -181,6 +232,10 @@ def calculate_fdr(folder, stats_dir, models=None, fid_value=None, device=None,
     """
     models = list(models) if models else list(DEFAULT_MODELS)
     device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
+
+    # log what the two input directories hold before spending anything on features
+    if not report_inputs(stats_dir, weights_dir, models, verbose=verbose):
+        raise FileNotFoundError('missing FD_r reference statistics in {}'.format(os.path.abspath(stats_dir)))
 
     fd, fdr = OrderedDict(), OrderedDict()
     for name in models:

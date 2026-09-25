@@ -42,7 +42,17 @@ for arg in "$@"; do
 done
 echo "CKPT=$CKPT | NUM_IMAGES=$NUM_IMAGES | GPUS=$GPUS"
 echo "CFG_LIST=[$CFG_LIST] REG_LIST=[$REG_LIST] BAND_LIST=[$BAND_LIST] FORWARD_TYPE=[$FORWARD_TYPE]"
-[ "$EVAL_FDR" = "1" ] && echo "EVAL_FDR=1 FDR_MODELS=[${FDR_MODELS:-all}] FDR_WEIGHTS_DIR=$FDR_WEIGHTS_DIR FDR_STATS_DIR=$FDR_STATS_DIR"
+if [ "$EVAL_FDR" = "1" ]; then
+  echo "EVAL_FDR=1 FDR_MODELS=[${FDR_MODELS:-all}]"
+  # list both input directories and stop now if something FD_r needs is missing,
+  # rather than after generating 50k images
+  python3 -c "
+import sys
+from util.fd_repr import report_inputs
+models = '$FDR_MODELS'.split() or None
+sys.exit(0 if report_inputs('$FDR_STATS_DIR', '$FDR_WEIGHTS_DIR', models) else 1)
+" || { echo 'FD_r inputs incomplete, aborting'; return 1 2>/dev/null || exit 1; }
+fi
 # ----------------------------------------------
 
 run_one () {   # args: CFG REG RMIN RMAX
