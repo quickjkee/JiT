@@ -90,6 +90,14 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, for
     model_without_ddp.eval()
     world_size = misc.get_world_size()
     local_rank = misc.get_rank()
+
+    if getattr(args, 'eval_fdr', False):
+        # check the FD_r inputs before generating anything, so a missing file costs nothing
+        from util.fd_repr import report_inputs
+        if not report_inputs(args.fdr_stats_dir, args.fdr_weights_dir, args.fdr_models,
+                             verbose=local_rank == 0):
+            raise FileNotFoundError(
+                'FD_r reference statistics missing in {}'.format(args.fdr_stats_dir))
     num_steps = args.num_images // (batch_size * world_size) + 1
 
     # Construct the folder name for saving generated images.

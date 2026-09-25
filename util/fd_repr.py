@@ -233,8 +233,10 @@ def calculate_fdr(folder, stats_dir, models=None, fid_value=None, device=None,
     models = list(models) if models else list(DEFAULT_MODELS)
     device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
 
-    # log what the two input directories hold before spending anything on features
-    if not report_inputs(stats_dir, weights_dir, models, verbose=verbose):
+    # the caller normally reports the inputs before generating images; say something here only
+    # when a file is missing
+    if not report_inputs(stats_dir, weights_dir, models, verbose=False):
+        report_inputs(stats_dir, weights_dir, models, verbose=True)
         raise FileNotFoundError('missing FD_r reference statistics in {}'.format(os.path.abspath(stats_dir)))
 
     fd, fdr = OrderedDict(), OrderedDict()
