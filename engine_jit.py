@@ -16,7 +16,6 @@ import util.lr_sched as lr_sched
 import copy
 
 from util.fid import calculate_fid
-from util.eval_logging import log_stage, trace_stage
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
@@ -147,8 +146,8 @@ def evaluate(model_without_ddp, args, batch_size=64, forward_fn_type='cfg'):
     torch.distributed.barrier()
 
     # back to no ema
-    with trace_stage('eval.restore_model_weights'):
-        model_without_ddp.load_state_dict(model_state_dict)
+    print("Switch back from ema")
+    model_without_ddp.load_state_dict(model_state_dict)
 
     # Score the shared image folder only on rank zero.
     if misc.is_main_process():
@@ -158,31 +157,24 @@ def evaluate(model_without_ddp, args, batch_size=64, forward_fn_type='cfg'):
             fid_statistics_file = 'fid_stats/jit_in512_stats.npz'
         else:
             raise NotImplementedError
-        with trace_stage('fid.calculate', folder=save_folder):
-            fid = calculate_fid(save_folder, fid_statistics_file, inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth')
+        fid = calculate_fid(save_folder, fid_statistics_file, inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth')
         print("FID: {:.4f}".format(fid), flush=True)
-        log_stage('fid.reported', value=float(fid), eval_fdr=getattr(args, 'eval_fdr', False))
 
         if getattr(args, 'eval_fdr', False):
             # FD_r^6: the same folder scored in six representation spaces, each normalised by
             # the distance that space assigns to real data. The Inception term is recomputed
             # against the ADM reference the normaliser was measured with, unless --fdr_reuse_fid
             # says to reuse the FID above (this repo's reference differs slightly from ADM's).
-            with trace_stage('fdr.calculate', models=args.fdr_models):
-                from util.fd_repr import calculate_fdr
-                fdr = calculate_fdr(save_folder, args.fdr_stats_dir, models=args.fdr_models,
-                                    fid_value=fid if args.fdr_reuse_fid else None,
-                                    batch_size=args.fdr_bsz, num_images=args.fdr_num_images,
-                                    weights_dir=args.fdr_weights_dir)
+            from util.fd_repr import calculate_fdr
+            fdr = calculate_fdr(save_folder, args.fdr_stats_dir, models=args.fdr_models,
+                                fid_value=fid if args.fdr_reuse_fid else None,
+                                batch_size=args.fdr_bsz, num_images=args.fdr_num_images,
+                                weights_dir=args.fdr_weights_dir)
             print("FDr^{}: {:.4f}".format(len(fdr['fdr']), fdr['fdr6']), flush=True)
-            log_stage('fdr.reported', value=fdr['fdr6'])
 
-        with trace_stage('eval.remove_images', folder=save_folder):
-            shutil.rmtree(save_folder)
+        shutil.rmtree(save_folder)
 
-    with trace_stage('eval.final_barrier', scored_metrics=misc.is_main_process()):
-        torch.distributed.barrier()
-    log_stage('eval.before_return')
+    torch.distributed.barrier()
 
 
 def evaluate_linear_probing(model, args, device):

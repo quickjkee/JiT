@@ -25,7 +25,6 @@ import torch.nn.functional as F
 from PIL import Image
 
 from util.fid import calculate_frechet_distance
-from util.eval_logging import log_stage, trace_stage
 
 IMAGE_EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'png', 'ppm', 'tif', 'tiff', 'webp'}
 
@@ -139,31 +138,21 @@ def representation_statistics(folder, name, device, batch_size=64, num_workers=8
                               weights_dir=DEFAULT_WEIGHTS_DIR):
     """mu, sigma of one representation space over the images in `folder`"""
     spec = REPR_MODELS[name]
-    with trace_stage('fdr.encoder.load', model=name, device=str(device)):
-        model, mean, std = build_encoder(name, device, weights_dir)
+    model, mean, std = build_encoder(name, device, weights_dir)
 
-    with trace_stage('fdr.loader.create', model=name, num_workers=num_workers):
-        loader = torch.utils.data.DataLoader(
-            _ImagePathDataset(list_images(folder, num_images)), batch_size=batch_size,
-            shuffle=False, drop_last=False, num_workers=num_workers)
+    loader = torch.utils.data.DataLoader(
+        _ImagePathDataset(list_images(folder, num_images)), batch_size=batch_size,
+        shuffle=False, drop_last=False, num_workers=num_workers)
 
     feats = []
-    with trace_stage('fdr.features', model=name, batches=len(loader)):
-        for batch_index, x in enumerate(loader):
-            x = x.to(device, non_blocking=True)
-            feats.append(_pool(model, preprocess(x, spec['target'], mean, std)).float().cpu())
-            if batch_index % 100 == 0:
-                log_stage('fdr.features.progress', model=name, batch=batch_index + 1,
-                          batches=len(loader))
-    with trace_stage('fdr.encoder.delete', model=name):
-        del model
-    with trace_stage('fdr.cuda.empty_cache', model=name):
-        torch.cuda.empty_cache()
+    for x in loader:
+        x = x.to(device, non_blocking=True)
+        feats.append(_pool(model, preprocess(x, spec['target'], mean, std)).float().cpu())
+    del model
+    torch.cuda.empty_cache()
 
-    with trace_stage('fdr.covariance', model=name):
-        feats = torch.cat(feats).numpy()
-        mu, sigma = feats.mean(axis=0), np.cov(feats, rowvar=False)
-    return mu, sigma
+    feats = torch.cat(feats).numpy()
+    return feats.mean(axis=0), np.cov(feats, rowvar=False)
 
 
 def report_inputs(stats_dir, weights_dir=DEFAULT_WEIGHTS_DIR, models=None, verbose=True):
@@ -271,7 +260,6 @@ def calculate_fdr(folder, stats_dir, models=None, fid_value=None, device=None,
 
     fd, fdr = OrderedDict(), OrderedDict()
     for name in models:
-        log_stage('fdr.model.begin', model=name)
         if name not in REPR_MODELS:
             raise KeyError('unknown representation space {!r}; known: {}'
                            .format(name, ', '.join(REPR_MODELS)))
@@ -280,25 +268,20 @@ def calculate_fdr(folder, stats_dir, models=None, fid_value=None, device=None,
         else:
             if name == 'inception':
                 from util.fid import calculate_fid
-                with trace_stage('fdr.inception.calculate'):
-                    raw = calculate_fid(folder, os.path.join(stats_dir, REPR_MODELS[name]['stats']),
-                                        device=str(device), batch_size=batch_size,
-                                        num_workers=num_workers, inception_path=inception_path)
+                raw = calculate_fid(folder, os.path.join(stats_dir, REPR_MODELS[name]['stats']),
+                                    device=str(device), batch_size=batch_size,
+                                    num_workers=num_workers, inception_path=inception_path)
             else:
                 mu, sigma = representation_statistics(folder, name, device, batch_size,
                                                       num_workers, num_images, weights_dir)
-                with trace_stage('fdr.reference.load', model=name):
-                    ref_mu, ref_sigma = _reference(stats_dir, name)
-                with trace_stage('fdr.frechet_distance', model=name):
-                    raw = calculate_frechet_distance(mu, sigma, ref_mu, ref_sigma)
+                ref_mu, ref_sigma = _reference(stats_dir, name)
+                raw = calculate_frechet_distance(mu, sigma, ref_mu, ref_sigma)
         fd[name] = float(raw)
         fdr[name] = float(raw) / REPR_MODELS[name]['valfd']
-        log_stage('fdr.model.end', model=name, fd=fd[name], fdr=fdr[name])
         if verbose:
-            print('FD[{}] = {:.4f}   FDr[{}] = {:.4f}'.format(name, fd[name], name, fdr[name]), flush=True)
+            print('FD[{}] = {:.4f}   FDr[{}] = {:.4f}'.format(name, fd[name], name, fdr[name]))
 
     out = dict(fd=fd, fdr=fdr, fdr6=float(np.mean(list(fdr.values()))))
     if verbose:
-        print('FDr^{} = {:.4f}'.format(len(fdr), out['fdr6']), flush=True)
-    log_stage('fdr.before_return', value=out['fdr6'])
+        print('FDr^{} = {:.4f}'.format(len(fdr), out['fdr6']))
     return out

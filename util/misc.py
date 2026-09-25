@@ -10,8 +10,6 @@ import copy
 import torch
 import torch.distributed as dist
 
-from util.eval_logging import log_stage, trace_stage
-
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -249,10 +247,7 @@ def init_distributed_mode(args):
 def shutdown_distributed():
     """Release the process group before model teardown; safe to call again on exit."""
     if is_dist_avail_and_initialized():
-        with trace_stage('distributed.destroy_process_group'):
-            dist.destroy_process_group()
-    else:
-        log_stage('distributed.cleanup.skipped', reason='no initialized process group')
+        dist.destroy_process_group()
 
 
 def add_weight_decay(model, weight_decay=0, skip_list=()):

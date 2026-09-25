@@ -3,7 +3,6 @@ import datetime
 import numpy as np
 import os
 import time
-import traceback
 from pathlib import Path
 
 import torch
@@ -13,7 +12,6 @@ import torchvision.datasets as datasets
 
 from util.crop import center_crop_arr, create_dataloader
 import util.misc as misc
-from util.eval_logging import enable_exit_diagnostics, log_stage, trace_stage
 
 import copy
 from engine_jit import train_one_epoch, evaluate, evaluate_linear_probing
@@ -267,15 +265,10 @@ def main(args):
         with torch.random.fork_rng():
             torch.manual_seed(seed)
             with torch.no_grad():
-                with trace_stage('evaluate.call'):
-                    evaluate(model_without_ddp, args, batch_size=args.gen_bsz,
-                             forward_fn_type=args.forward_type)
-            log_stage('eval.rng_restore.begin')
-        log_stage('eval.rng_restore.end')
-        log_stage('eval.complete')
+                evaluate(model_without_ddp, args, batch_size=args.gen_bsz,
+                         forward_fn_type=args.forward_type)
         # Match yrELF's torchrun lifecycle: tear down while the model is still alive.
         misc.shutdown_distributed()
-        log_stage('main.before_return', mode='evaluate_gen')
         return
 
     # Toy overfit experiment
@@ -334,18 +327,9 @@ def main(args):
 
 
 if __name__ == '__main__':
-    enable_exit_diagnostics()
     args = get_args_parser().parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     try:
         main(args)
-        log_stage('main.returned')
-    except BaseException as exc:
-        log_stage('main.error', error_type=type(exc).__name__, error=str(exc))
-        # Print before cleanup, which itself may fail or hang.
-        traceback.print_exc()
-        raise
     finally:
-        with trace_stage('entrypoint.cleanup'):
-            misc.shutdown_distributed()
-    log_stage('entrypoint.complete')
+        misc.shutdown_distributed()
