@@ -140,6 +140,37 @@ to evaluate FID and IS against a reference image folder or statistics. You can u
 to prepare the reference image folder, or directly use our pre-computed reference stats
 under ```fid_stats```.
 
+#### FD_r^6
+
+Optionally the same generated images are also scored with FD_r^6, the average of six Frechet
+distances taken in different representation spaces (Inception, ConvNeXt-V2, DINOv2, CLIP, MAE,
+SigLIP), each divided by the distance that space assigns to real data, from
+[Representation Frechet Loss](https://github.com/Jiawei-Yang/FD-loss). Fetch the released
+reference statistics once:
+
+```
+python prepare_fd_stats.py            # -> fid_stats/fd_repr/*.npz
+```
+
+and add ```--eval_fdr``` to any evaluation command:
+
+```
+torchrun --nproc_per_node=8 --nnodes=1 --node_rank=0 \
+main_jit.py \
+--model JiT-B/16 --img_size 256 --noise_scale 1.0 \
+--gen_bsz 256 --num_images 50000 --cfg 3.0 --interval_min 0.1 --interval_max 1.0 \
+--output_dir ${CKPT_DIR} --resume ${CKPT_DIR} \
+--data_path ${IMAGENET_PATH} --evaluate_gen \
+--eval_fdr
+```
+
+Without the flag nothing changes. With it, each space is printed and logged (```fdr_dinov2```,
+```fdr_clip```, ...) next to ```fdr6```. Options: ```--fdr_models``` to score a subset of the
+spaces, ```--fdr_stats_dir``` for the statistics directory, ```--fdr_bsz``` for the encoder batch
+size, ```--fdr_num_images``` to score a subset of the images, and ```--fdr_reuse_fid``` to reuse
+the FID above for the Inception term instead of recomputing it against the ADM reference the
+normaliser was calibrated with. Requires ```timm```.
+
 ### Acknowledgements
 
 We thank Google TPU Research Cloud (TRC) for granting us access to TPUs, and the MIT

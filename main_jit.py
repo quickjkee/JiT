@@ -96,6 +96,22 @@ def get_args_parser():
                         help='Frequency (in epochs) for evaluation')
     parser.add_argument('--online_eval', action='store_true')
     parser.add_argument('--evaluate_gen', action='store_true')
+
+    # FD_r^6: Frechet distance in six representation spaces, normalised and averaged
+    # (util/fd_repr.py; run prepare_fd_stats.py once to fetch the reference statistics)
+    parser.add_argument('--eval_fdr', action='store_true',
+                        help='also report FD_r^6 next to FID')
+    parser.add_argument('--fdr_models', default=None, type=str, nargs='+',
+                        help='subset of the spaces: inception convnext dinov2 clip mae siglip')
+    parser.add_argument('--fdr_stats_dir', default='fid_stats/fd_repr', type=str,
+                        help='directory with the reference statistics')
+    parser.add_argument('--fdr_bsz', default=64, type=int,
+                        help='batch size for the representation encoders')
+    parser.add_argument('--fdr_num_images', default=None, type=int,
+                        help='evaluate FD_r on a subset of the generated images')
+    parser.add_argument('--fdr_reuse_fid', action='store_true',
+                        help="use this repo's FID for the Inception term instead of recomputing "
+                             'it against the ADM reference the FD_r normaliser was measured with')
     parser.add_argument('--gen_bsz', type=int, default=256,
                         help='Generation batch size')
 

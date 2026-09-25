@@ -164,6 +164,21 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, for
         postfix = "_cfg{}_res{}".format(model_without_ddp.cfg_scale, args.img_size)
         log_writer.add_scalar('fid{}'.format(postfix), fid, epoch)
         print("FID: {:.4f}".format(fid))
+
+        if getattr(args, 'eval_fdr', False):
+            # FD_r^6: the same folder scored in six representation spaces, each normalised by
+            # the distance that space assigns to real data. The Inception term is recomputed
+            # against the ADM reference the normaliser was measured with, unless --fdr_reuse_fid
+            # says to reuse the FID above (this repo's reference differs slightly from ADM's).
+            from util.fd_repr import calculate_fdr
+            fdr = calculate_fdr(save_folder, args.fdr_stats_dir, models=args.fdr_models,
+                                fid_value=fid if args.fdr_reuse_fid else None,
+                                batch_size=args.fdr_bsz, num_images=args.fdr_num_images)
+            for name, value in fdr['fdr'].items():
+                log_writer.add_scalar('fdr_{}{}'.format(name, postfix), value, epoch)
+            log_writer.add_scalar('fdr6{}'.format(postfix), fdr['fdr6'], epoch)
+            print("FDr^6: {:.4f}".format(fdr['fdr6']))
+
         shutil.rmtree(save_folder)
 
     torch.distributed.barrier()

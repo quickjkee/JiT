@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# reference statistics fetched by prepare_fd_stats.py (141 MB)
+fid_stats/fd_repr/
