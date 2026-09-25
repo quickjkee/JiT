@@ -109,6 +109,9 @@ def get_args_parser():
                         help='batch size for the representation encoders')
     parser.add_argument('--fdr_num_images', default=None, type=int,
                         help='evaluate FD_r on a subset of the generated images')
+    parser.add_argument('--fdr_weights_dir', default='fd_encoders', type=str,
+                        help='directory with the encoder weights saved by prepare_fd_encoders.py; '
+                             'when they are there nothing is downloaded')
     parser.add_argument('--fdr_reuse_fid', action='store_true',
                         help="use this repo's FID for the Inception term instead of recomputing "
                              'it against the ADM reference the FD_r normaliser was measured with')

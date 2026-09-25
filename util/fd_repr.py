@@ -50,6 +50,9 @@ REPR_MODELS = OrderedDict([
 
 DEFAULT_MODELS = list(REPR_MODELS)
 
+# where prepare_fd_encoders.py puts the encoder weights, so that scoring needs no network
+DEFAULT_WEIGHTS_DIR = 'fd_encoders'
+
 
 class _ImagePathDataset(torch.utils.data.Dataset):
     """Loads images lazily as float tensors in [0, 1]; the generated PNGs are already 256x256."""
@@ -74,6 +77,52 @@ def list_images(folder, num_images=None):
     return files[:num_images] if num_images else files
 
 
+def encoder_file(name):
+    """local weights filename for one representation space"""
+    return REPR_MODELS[name]['timm'].replace('/', '_').replace('.', '_') + '.pt'
+
+
+def build_encoder(name, device, weights_dir=DEFAULT_WEIGHTS_DIR):
+    """
+    The encoder for one representation space, built the way the reference statistics were.
+
+    Mirrors FD-loss: the model is created with dynamic_img_size / dynamic_img_pad so that it
+    accepts the reference input size (256 is not a multiple of DINOv2's patch size of 14, and
+    the padding is what keeps the token grid the same as theirs), and the normalisation comes
+    from the model's own pretrained config, which differs from ImageNet for CLIP and SigLIP.
+
+    Weights come from `weights_dir` when they are there, so the metric runs with no network
+    access; see prepare_fd_encoders.py. Otherwise timm downloads them.
+    """
+    import timm
+
+    spec = REPR_MODELS[name]
+    local = os.path.join(weights_dir, encoder_file(name)) if weights_dir else None
+    offline = local is not None and os.path.exists(local)
+
+    kwargs = dict(pretrained=not offline, num_classes=0)
+    try:
+        model = timm.create_model(spec['timm'], dynamic_img_size=True, dynamic_img_pad=True,
+                                  **kwargs)
+    except TypeError:                      # CNNs take any input size already
+        model = timm.create_model(spec['timm'], **kwargs)
+    if offline:
+        model.load_state_dict(torch.load(local, map_location='cpu', weights_only=True))
+    model = model.eval().to(device)
+
+    cfg = timm.data.resolve_model_data_config(model)
+    mean = torch.tensor(cfg.get('mean', IMAGENET_MEAN), device=device).view(1, 3, 1, 1)
+    std = torch.tensor(cfg.get('std', IMAGENET_STD), device=device).view(1, 3, 1, 1)
+    return model, mean, std
+
+
+def preprocess(x, target, mean, std):
+    """[0, 1] images -> encoder input: bicubic resize to the reference size, then normalise"""
+    x = F.interpolate(x, size=(target, target), mode='bicubic', align_corners=False,
+                      antialias=True)
+    return (x - mean) / std
+
+
 def _pool(model, x):
     """cls / attention-pooled feature for ViTs, spatially averaged feature for CNNs"""
     out = model.forward_features(x)
@@ -85,21 +134,11 @@ def _pool(model, x):
 
 
 @torch.no_grad()
-def representation_statistics(folder, name, device, batch_size=64, num_workers=8, num_images=None):
+def representation_statistics(folder, name, device, batch_size=64, num_workers=8, num_images=None,
+                              weights_dir=DEFAULT_WEIGHTS_DIR):
     """mu, sigma of one representation space over the images in `folder`"""
-    import timm  # only needed when FD_r is requested
-
     spec = REPR_MODELS[name]
-    # ViTs are built at the size their reference statistics were computed at, which interpolates
-    # the position embeddings; CNNs take any input size and ignore img_size
-    try:
-        model = timm.create_model(spec['timm'], pretrained=True, num_classes=0,
-                                  img_size=spec['target'])
-    except TypeError:
-        model = timm.create_model(spec['timm'], pretrained=True, num_classes=0)
-    model = model.eval().to(device)
-    mean = torch.tensor(IMAGENET_MEAN, device=device).view(1, 3, 1, 1)
-    std = torch.tensor(IMAGENET_STD, device=device).view(1, 3, 1, 1)
+    model, mean, std = build_encoder(name, device, weights_dir)
 
     loader = torch.utils.data.DataLoader(
         _ImagePathDataset(list_images(folder, num_images)), batch_size=batch_size,
@@ -108,10 +147,7 @@ def representation_statistics(folder, name, device, batch_size=64, num_workers=8
     feats = []
     for x in loader:
         x = x.to(device, non_blocking=True)
-        if x.shape[-1] != spec['target']:
-            x = F.interpolate(x, size=(spec['target'],) * 2, mode='bicubic',
-                              align_corners=False, antialias=True).clamp(0, 1)
-        feats.append(_pool(model, (x - mean) / std).float().cpu())
+        feats.append(_pool(model, preprocess(x, spec['target'], mean, std)).float().cpu())
     del model
     torch.cuda.empty_cache()
 
@@ -131,7 +167,8 @@ def _reference(stats_dir, name):
 
 def calculate_fdr(folder, stats_dir, models=None, fid_value=None, device=None,
                   batch_size=64, num_workers=8, num_images=None, verbose=True,
-                  inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth'):
+                  inception_path='fid_stats/pt_inception-2015-12-05-6726825d.pth',
+                  weights_dir=DEFAULT_WEIGHTS_DIR):
     """
     Frechet distance per representation space, its normalised version, and their mean.
 
@@ -160,7 +197,7 @@ def calculate_fdr(folder, stats_dir, models=None, fid_value=None, device=None,
                                     num_workers=num_workers, inception_path=inception_path)
             else:
                 mu, sigma = representation_statistics(folder, name, device, batch_size,
-                                                      num_workers, num_images)
+                                                      num_workers, num_images, weights_dir)
                 ref_mu, ref_sigma = _reference(stats_dir, name)
                 raw = calculate_frechet_distance(mu, sigma, ref_mu, ref_sigma)
         fd[name] = float(raw)

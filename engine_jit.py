@@ -173,7 +173,8 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None, for
             from util.fd_repr import calculate_fdr
             fdr = calculate_fdr(save_folder, args.fdr_stats_dir, models=args.fdr_models,
                                 fid_value=fid if args.fdr_reuse_fid else None,
-                                batch_size=args.fdr_bsz, num_images=args.fdr_num_images)
+                                batch_size=args.fdr_bsz, num_images=args.fdr_num_images,
+                                weights_dir=args.fdr_weights_dir)
             for name, value in fdr['fdr'].items():
                 log_writer.add_scalar('fdr_{}{}'.format(name, postfix), value, epoch)
             log_writer.add_scalar('fdr6{}'.format(postfix), fdr['fdr6'], epoch)

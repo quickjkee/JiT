@@ -173,6 +173,18 @@ for every point of the sweep:
   MODEL="JiT-H/16" EVAL_FDR=1
 ```
 
+On a machine without internet access, fetch both pieces beforehand somewhere that has it:
+
+```
+python prepare_fd_stats.py                    # reference statistics -> fid_stats/fd_repr (141 MB)
+python prepare_fd_encoders.py                 # encoder weights      -> fd_encoders (about 5 GB)
+```
+
+then copy ```fid_stats/fd_repr``` and ```fd_encoders``` next to the code on the cluster. The
+encoders are loaded from that directory, so nothing is downloaded at evaluation time; point
+```--fdr_weights_dir``` (or ```FDR_WEIGHTS_DIR``` in run.sh) elsewhere if you keep them
+somewhere else.
+
 Without the flag nothing changes. With it, each space is printed and logged (```fdr_dinov2```,
 ```fdr_clip```, ...) next to ```fdr6```. Options: ```--fdr_models``` to score a subset of the
 spaces, ```--fdr_stats_dir``` for the statistics directory, ```--fdr_bsz``` for the encoder batch

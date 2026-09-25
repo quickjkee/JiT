@@ -16,6 +16,7 @@ CKPT=/home/quickjkee/projects/CUR/registers/checkpoints/jit/tmp/new/checkpoint-4
 EVAL_FDR=0                          # 1 -> also report FD_r^6 (run prepare_fd_stats.py once)
 FDR_MODELS=""                       # e.g. "dinov2 clip" to score fewer representation spaces
 FDR_BSZ=64
+FDR_WEIGHTS_DIR=fd_encoders        # encoders saved by prepare_fd_encoders.py (offline)
 SCRATCH=here      # reused + wiped each run; nothing persisted
 PORT=29570
 # ----------------------------------------------
@@ -48,7 +49,7 @@ run_one () {   # args: CFG REG RMIN RMAX
   rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"; PORT=$((PORT+1))
   local FDR_ARGS=""
   if [ "$EVAL_FDR" = "1" ]; then
-    FDR_ARGS="--eval_fdr --fdr_bsz $FDR_BSZ"
+    FDR_ARGS="--eval_fdr --fdr_bsz $FDR_BSZ --fdr_weights_dir $FDR_WEIGHTS_DIR"
     [ -n "$FDR_MODELS" ] && FDR_ARGS="$FDR_ARGS --fdr_models $FDR_MODELS"
   fi
   local OUT FID FDR
