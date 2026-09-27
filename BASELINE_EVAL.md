@@ -189,3 +189,23 @@ passed two-image CUDA generation through the documented `ASSETS_DIR`/`CKPT` inte
 with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` in qwen35. This confirms that
 checkpoint loading and generation use the relocated bundles. Logs:
 `baseline_outputs/packaged_check_gelnj9zt/`. Temporary extracted copies were removed.
+
+## Native worker crash diagnostics
+
+The evaluator uses Gloo for its two CPU barriers. Model generation stays on each worker's
+GPU; the evaluator does not exchange model tensors between GPUs. This avoids initializing
+an unused NCCL communicator during checkpoint loading.
+
+Launchers retain each worker's stdout/stderr under `<run>/workers/`, enable Python fault
+tracebacks, and print runtime versions. RAE reports the loading stages before GPU transfer,
+decoder verification, and stage-2/autoguidance loading.
+
+A reported H100 job terminated with SIGSEGV on ranks 6 and 7 after stage-1 normalization
+loaded. Its supplied stack showed UCX signal handlers without the faulting application
+frame. This does not identify the root cause. Switching the barriers is a mitigation;
+confirmation on that remote runtime requires a rerun. Existing model archives remain valid.
+
+Local validation of this mitigation: two A100 GPUs in qwen35 completed the same four-image
+RAE smoke case before and after the backend change. All four PNGs were byte-identical;
+both workers recorded separate stdout/stderr logs. The H100/UCX crash was not reproduced
+locally.

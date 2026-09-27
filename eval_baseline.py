@@ -1,5 +1,8 @@
 """Generate official baseline samples and score them using JiT's FD_r pipeline."""
 import argparse
+import faulthandler
+from importlib.metadata import version
+import sys
 import json
 from math import isfinite
 import os
@@ -15,6 +18,7 @@ from util.fd_repr import calculate_fdr, report_inputs
 
 
 def main():
+    faulthandler.enable(all_threads=True)
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('--model', choices=REPOS, required=True)
     parser.add_argument('--repo')
@@ -49,7 +53,11 @@ def main():
     device = torch.device('cuda', int(os.environ.get('LOCAL_RANK', 0)))
     torch.cuda.set_device(device)
     if world > 1:
-        dist.init_process_group('nccl', device_id=device)
+        # Workers only synchronize filesystem writes; no GPU tensors are communicated.
+        dist.init_process_group('gloo')
+    print(f'[rank={rank}] Python {sys.version.split()[0]}, torch {torch.__version__}, '
+          f'CUDA {torch.version.cuda}, transformers {version("transformers")}, '
+          f'device={device}, barrier_backend={dist.get_backend() if world > 1 else "none"}', flush=True)
     torch.manual_seed(args.seed * world + rank)
     out = Path(args.output_dir).resolve()
     samples = out / 'samples'
@@ -75,7 +83,9 @@ def main():
                 labels='index modulo 1000', torch_version=torch.__version__), indent=2))
         if world > 1:
             dist.barrier()
+        print(f'[rank={rank}] Loading {args.model}', flush=True)
         generate = build_generator(args, device)
+        print(f'[rank={rank}] Generator ready', flush=True)
         indices = list(range(rank, args.num_images, world))
         with torch.inference_mode():
             for start in range(0, len(indices), args.batch_size):
@@ -94,7 +104,7 @@ def main():
         torch.cuda.empty_cache()
     if world > 1:
         dist.barrier()
-        dist.destroy_process_group()  # Scoring can exceed NCCL's idle timeout.
+        dist.destroy_process_group()  # Other workers can exit before rank zero scores images.
     if rank == 0:
         files = list(samples.glob('*.png'))
         expected = {f'{i:06d}.png' for i in range(args.num_images)}

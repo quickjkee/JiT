@@ -119,6 +119,7 @@ def build_generator(args, device):
         encoder_path = str(assets / 'weights/rae_encoder')
         config.stage_1.params.encoder_config_path = encoder_path
         config.stage_1.params.encoder_params.dinov2_path = encoder_path
+    prefix = f'[rank={os.environ.get("RANK", "0")}] RAE'
     with working_directory(repo):
         # Transformers 5 validates types before RAE can replace its string placeholder.
         # Resolve only that placeholder to the exact value RAE assigns immediately after load.
@@ -129,10 +130,19 @@ def build_generator(args, device):
                 decoder_data['patch_size'] = config.stage_1.params.get('decoder_patch_size', 16)
                 Path(temporary, 'config.json').write_text(json.dumps(decoder_data))
                 config.stage_1.params.decoder_config_path = temporary
-            rae = instantiate_from_config(config.stage_1).eval().to(device)
+            print(f'{prefix}: constructing stage 1 on CPU', flush=True)
+            rae = instantiate_from_config(config.stage_1).eval()
+            print(f'{prefix}: moving stage 1 to {device}', flush=True)
+            rae = rae.to(device)
+        print(f'{prefix}: verifying decoder checkpoint', flush=True)
         rae.decoder.load_state_dict(load_weights(config.stage_1.params.pretrained_decoder_path), strict=True)
-        model = instantiate_from_config(config.stage_2).eval().to(device)
+        print(f'{prefix}: loading stage 2 from {config.stage_2.ckpt}', flush=True)
+        model = instantiate_from_config(config.stage_2).eval()
+        print(f'{prefix}: moving stage 2 to {device}', flush=True)
+        model = model.to(device)
+        print(f'{prefix}: loading autoguidance model', flush=True)
         guide = instantiate_from_config(config.guidance.guidance_model).eval().to(device)
+        print(f'{prefix}: all models loaded', flush=True)
     transport = create_transport(**config.transport.params,
         time_dist_shift=(config.misc.time_dist_shift_dim / config.misc.time_dist_shift_base) ** 0.5)
     params = OmegaConf.to_container(config.sampler.params)

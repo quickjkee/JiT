@@ -38,11 +38,13 @@ for arg in "$@"; do
   esac
 done
 # Bound CPU threads, including BLAS used for covariance square roots.
+export PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 MKL_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8
 for CFG in $CFG_LIST; do
   for BAND in $BAND_LIST; do
     OUT="$OUTPUT_ROOT/$MODEL/$TAG-cfg$CFG-band$BAND-steps$STEPS-seed$SEED"
     CMD=("$PYTHON" -m torch.distributed.run --standalone --nproc_per_node="$GPUS"
+      --log-dir "$OUT/workers" --tee 3
       eval_baseline.py --model "$MODEL" --assets-dir "$ASSETS_DIR" --output-dir "$OUT"
       --batch-size "$GEN_BSZ" --num-images "$NUM_IMAGES" --steps "$STEPS"
       --cfg "$CFG" --interval-min "${BAND%:*}" --interval-max "${BAND#*:}" --seed "$SEED"
