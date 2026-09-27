@@ -200,3 +200,10 @@ ORCD Seed Fund Grants for supporting GPU resources.
 ### Contact
 
 If you have any questions, feel free to contact me through email (tianhong@mit.edu). Enjoy!
+
+### Other official ImageNet models
+
+[Baseline evaluation](BASELINE_EVAL.md) adds REPA-512, PixelFlow-256, PixNerd-512,
+and RAE-512 using their official pretrained weights and samplers. Each has a
+`run_<model>.sh` launcher with `KEY=VALUE` overrides and shared FD_r^6 scoring.
+Plain SiT-512 is skipped because no original-author 512 checkpoint was found.
