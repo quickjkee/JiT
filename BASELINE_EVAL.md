@@ -74,7 +74,7 @@ its own increasing time convention. PixelFlow rejects interval overrides. Its
 stage, not the number of adaptive model evaluations. `PIXELFLOW_SOLVER=euler` uses
 `STEPS` model evaluations per stage. PixelFlow output directories include the solver name.
 
-Overrides: `PYTHON`, `GPUS`, `GEN_BSZ`, `NUM_IMAGES`, `SEED`, `CKPT`, `CONFIG`, `REPO`,
+Overrides: `PYTHON`, `GPUS`, `GEN_BSZ`, `NUM_IMAGES`, `SEED`, `DIST_TIMEOUT_MINUTES`, `CKPT`, `CONFIG`, `REPO`,
 `CFG_LIST`, `STEPS`, `PIXELFLOW_SOLVER` (PixelFlow only), `BAND_LIST`, `EVAL_FDR`, `FDR_MODELS`, `FDR_BSZ`,
 `FDR_STATS_DIR`, `FDR_WEIGHTS_DIR`, `OUTPUT_ROOT`, `TAG`, `SCORE_ONLY`, `DRY_RUN`.
 `CKPT` is a file except for PixelFlow, where it is a directory containing `config.yaml`
@@ -318,3 +318,36 @@ Python-random seeds; this evaluator draws rank-seeded CUDA noise. Both use stand
 normal noise and balanced classes, but equal seed values do not produce identical
 image sets. The parity check above used matched input noise and eager execution;
 it does not establish compiled-path parity or full-dataset FID reproduction.
+
+
+## SiT/REPA end-of-generation timeout (2026-09-28)
+
+The supplied failure log used the older NCCL evaluator. Rank zero timed out after
+600,000 ms in collective sequence 2 while other ranks continued generating about
+5,980-6,180 of 6,250 images each and had completed only sequence 1. In that evaluator,
+the next collective after generation is the final barrier. This is consistent with
+a faster rank waiting more than ten minutes for slower ranks; no model exception or
+non-finite output appears in the excerpt.
+
+Current launchers use Gloo and now set an explicit `DIST_TIMEOUT_MINUTES=120`.
+This controls how long a distributed operation may wait, not the total generation
+runtime. Override it with another positive, finite number of minutes if needed.
+The [PyTorch default](https://docs.pytorch.org/docs/2.11/distributed.html#torch.distributed.init_process_group)
+is ten minutes for NCCL and thirty for Gloo, so changing the backend alone still
+leaves a finite default that can be too short for long independent sampling jobs.
+Startup logs and `run.json` record the configured value. Each rank logs when all
+its PNGs have been saved and when it starts waiting for its peers.
+
+A two-process Gloo check reproduced the failure with a deliberately delayed rank
+and a short timeout; the same check passed with a longer timeout. All four launchers
+pass the new setting through, and invalid timeout values fail before GPU setup.
+Two A100 GPUs in qwen35 completed all 250 REPA steps, saved four valid 512-pixel
+images, passed the final barrier and exited successfully. Artifacts are under
+`baseline_outputs/repa/barrier_timeout_check-*`. The checkpoint archives and sampling
+settings are unchanged.
+
+Keep the failed run's sample directory if it survived. `SCORE_ONLY=1` can reuse a
+complete set of all requested PNGs; the evaluator checks the exact filenames before
+scoring. The supplied log ends during generation on several ranks, so a complete
+50,000-image set is not established. The evaluator does not resume partially generated
+sets, and these partial samples must not be reported as a 50,000-image result.

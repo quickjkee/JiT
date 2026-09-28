@@ -1,6 +1,7 @@
 """Generate official baseline samples and score them using JiT's FD_r pipeline."""
 import argparse
 import faulthandler
+from datetime import timedelta
 from importlib.metadata import version
 import sys
 import json
@@ -34,6 +35,8 @@ def main():
     parser.add_argument('--interval-min', type=float, default=0.)
     parser.add_argument('--interval-max', type=float, default=1.)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--dist-timeout-minutes', type=float, default=120.,
+                        help='Maximum wait for slower ranks at distributed barriers')
     parser.add_argument('--skip-fdr', action='store_true')
     parser.add_argument('--score-only', action='store_true')
     parser.add_argument('--fdr-models', nargs='+')
@@ -43,6 +46,8 @@ def main():
     args = parser.parse_args()
     if args.num_images < 2 or args.batch_size < 1 or args.steps < 2:
         parser.error('num-images >= 2, batch-size >= 1 and steps >= 2 are required')
+    if not isfinite(args.dist_timeout_minutes) or args.dist_timeout_minutes <= 0:
+        parser.error('dist-timeout-minutes must be finite and positive')
     if args.model == 'pixelflow':
         args.pixelflow_solver = args.pixelflow_solver or 'dopri5'
     elif args.pixelflow_solver is not None:
@@ -59,10 +64,11 @@ def main():
     torch.cuda.set_device(device)
     if world > 1:
         # Workers only synchronize filesystem writes; no GPU tensors are communicated.
-        dist.init_process_group('gloo')
+        dist.init_process_group('gloo', timeout=timedelta(minutes=args.dist_timeout_minutes))
     print(f'[rank={rank}] Python {sys.version.split()[0]}, torch {torch.__version__}, '
           f'CUDA {torch.version.cuda}, transformers {version("transformers")}, '
-          f'device={device}, barrier_backend={dist.get_backend() if world > 1 else "none"}', flush=True)
+          f'device={device}, barrier_backend={dist.get_backend() if world > 1 else "none"}, '
+          f'dist_timeout_minutes={args.dist_timeout_minutes:g}', flush=True)
     torch.manual_seed(args.seed * world + rank)
     out = Path(args.output_dir).resolve()
     samples = out / 'samples'
@@ -108,9 +114,11 @@ def main():
                 images = pixels.byte().permute(0, 2, 3, 1).cpu().numpy()
                 for idx, img in zip(ids, images):
                     Image.fromarray(img).save(samples / f'{idx:06d}.png')
+        print(f'[rank={rank}] Generation complete: saved {len(indices)} samples', flush=True)
         del generate
         torch.cuda.empty_cache()
     if world > 1:
+        print(f'[rank={rank}] Waiting for all ranks (timeout={args.dist_timeout_minutes:g} min)', flush=True)
         dist.barrier()
         dist.destroy_process_group()  # Other workers can exit before rank zero scores images.
     if rank == 0:

@@ -8,6 +8,7 @@ GPUS=1
 GEN_BSZ=8
 NUM_IMAGES=50000
 SEED=0
+DIST_TIMEOUT_MINUTES=120
 CKPT=
 CONFIG=
 REPO=
@@ -33,7 +34,7 @@ for arg in "$@"; do
   key=${arg%%=*}
   [[ "$arg" == *=* ]] || { echo 'Use KEY=VALUE overrides' >&2; exit 2; }
   case "$key" in
-    PYTHON|GPUS|GEN_BSZ|NUM_IMAGES|SEED|CKPT|CONFIG|REPO|ASSETS_DIR|FDR_BSZ|FDR_MODELS|FDR_WEIGHTS_DIR|FDR_STATS_DIR|EVAL_FDR|SCORE_ONLY|DRY_RUN|OUTPUT_ROOT|TAG|CFG_LIST|STEPS|BAND_LIST)
+    PYTHON|GPUS|GEN_BSZ|NUM_IMAGES|SEED|DIST_TIMEOUT_MINUTES|CKPT|CONFIG|REPO|ASSETS_DIR|FDR_BSZ|FDR_MODELS|FDR_WEIGHTS_DIR|FDR_STATS_DIR|EVAL_FDR|SCORE_ONLY|DRY_RUN|OUTPUT_ROOT|TAG|CFG_LIST|STEPS|BAND_LIST)
       printf -v "$key" '%s' "${arg#*=}" ;;
     PIXELFLOW_SOLVER)
       [[ "$MODEL" == pixelflow ]] || { echo "PIXELFLOW_SOLVER applies only to PixelFlow" >&2; exit 2; }
@@ -52,6 +53,7 @@ for CFG in $CFG_LIST; do
       --log-dir "$OUT/workers" --tee 3
       eval_baseline.py --model "$MODEL" --assets-dir "$ASSETS_DIR" --output-dir "$OUT"
       --batch-size "$GEN_BSZ" --num-images "$NUM_IMAGES" --steps "$STEPS"
+      --dist-timeout-minutes "$DIST_TIMEOUT_MINUTES"
       --cfg "$CFG" --interval-min "${BAND%:*}" --interval-max "${BAND#*:}" --seed "$SEED"
       --fdr-bsz "$FDR_BSZ" --fdr-weights-dir "$FDR_WEIGHTS_DIR" --fdr-stats-dir "$FDR_STATS_DIR")
     [[ "$MODEL" != pixelflow ]] || CMD+=(--pixelflow-solver "$PIXELFLOW_SOLVER")
