@@ -213,6 +213,30 @@ RAE smoke case before and after the backend change. All four PNGs were byte-iden
 both workers recorded separate stdout/stderr logs. The H100/UCX crash was not reproduced
 locally.
 
+### RAE rotary initialization crash (2026-09-28 follow-up)
+
+The next remote traceback localized rank 7's SIGSEGV to
+`stage2/models/model_utils.py:171`, the CPU `freqs.cos().view(...)` expression in
+`VisionRotaryEmbeddingFast.__init__`. This runs before the stage-2 checkpoint is
+loaded. The earlier Gloo change did not remove this failure. The traceback still
+identifies no underlying native library fault; the UCX handler alone is not evidence
+that UCX caused it.
+
+RAE stage 2 and its autoguidance model now construct on PyTorch's meta device and
+load the checkpoint with `strict=True, assign=True` before moving to CUDA. This
+bypasses CPU rotary trigonometry and restores the saved rotary buffers directly.
+Both official checkpoints include all rotary buffers, absolute position embeddings,
+and Fourier weights. See the [PyTorch checkpoint-loading recipe](https://docs.pytorch.org/tutorials/recipes/recipes/module_load_state_dict_tips.html).
+The model archive and launch arguments remain valid.
+
+Validation: a dispatch guard that rejects CPU cosine/sine catches the old loader;
+both corrected loaders pass. All 382 main-model and 190 autoguidance state entries
+match the checkpoints exactly, no meta tensors remain, and removing a rotary buffer
+causes strict loading to fail. Two A100 GPUs in qwen35 completed the full 50-step
+schedule before and after the change; all four 512-pixel PNGs were byte-identical.
+Artifacts are in `baseline_outputs/rae/{before,after}_meta_init-*`. Remote H100 crash
+resolution requires a rerun.
+
 ## PixelFlow paper sampling recipe (2026-09-28 correction)
 
 The bundled model is XL/4: 28 blocks, width 1152, 16 attention heads, patch size 4,

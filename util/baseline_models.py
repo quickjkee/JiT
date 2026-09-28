@@ -31,6 +31,17 @@ def load_weights(path):
     return state.get('ema', state)
 
 
+def load_rae_dit(config):
+    from utils.model_utils import get_obj_from_str
+
+    # Avoid CPU rotary cos/sin initialization, which segfaulted on the remote runtime.
+    # Both released checkpoints include these buffers; strict assignment restores them.
+    with torch.device('meta'):
+        model = get_obj_from_str(config.target)(**config.get('params', {}))
+    model.load_state_dict(load_weights(config.ckpt), strict=True, assign=True)
+    return model
+
+
 def build_generator(args, device):
     assets = Path(args.assets_dir).resolve()
     repo = Path(args.repo).resolve() if args.repo else assets / REPOS[args.model]
@@ -144,12 +155,12 @@ def build_generator(args, device):
             rae = rae.to(device)
         print(f'{prefix}: verifying decoder checkpoint', flush=True)
         rae.decoder.load_state_dict(load_weights(config.stage_1.params.pretrained_decoder_path), strict=True)
-        print(f'{prefix}: loading stage 2 from {config.stage_2.ckpt}', flush=True)
-        model = instantiate_from_config(config.stage_2).eval()
+        print(f'{prefix}: loading stage 2 from {config.stage_2.ckpt} (meta initialization)', flush=True)
+        model = load_rae_dit(config.stage_2).eval()
         print(f'{prefix}: moving stage 2 to {device}', flush=True)
         model = model.to(device)
-        print(f'{prefix}: loading autoguidance model', flush=True)
-        guide = instantiate_from_config(config.guidance.guidance_model).eval().to(device)
+        print(f'{prefix}: loading autoguidance model (meta initialization)', flush=True)
+        guide = load_rae_dit(config.guidance.guidance_model).eval().to(device)
         print(f'{prefix}: all models loaded', flush=True)
     transport = create_transport(**config.transport.params,
         time_dist_shift=(config.misc.time_dist_shift_dim / config.misc.time_dist_shift_base) ** 0.5)
