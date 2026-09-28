@@ -263,3 +263,58 @@ samples. JiT's FD_r pipeline currently uses its existing PyTorch Inception imple
 and the ADM reference statistics. Numerical equivalence of those evaluators has not been
 established. The raw `FD[inception]` is distinct from its normalized `FDr[inception]`
 and the six-space `FDr^6` average. No reproduction of FID 1.98 is claimed from smoke tests.
+
+## PixNerd-512 sampling audit (2026-09-28)
+
+The bundled `res512_ft200k_epoch=325-step=1800000_emainit.ckpt` is the official
+512 fine-tuned XL/16 model. Its 336 EMA tensors contain 700,589,219 elements and
+load strictly. The 256-named architecture config also serves 512: the official
+forward derives a 32-by-32 patch grid from the 512 input and patch size 16.
+
+Confirmed settings: EMA weights in FP32, BF16 autocast inside `BaseSampler.forward`,
+Euler ODE with 100 updates, linear noise-to-data time, no time shift, CFG 3.5,
+null class 1000, and 50 samples per class for a 50,000-image run. The ODE step ignores
+`w_scheduler`, so omitting it does not change the trajectory.
+
+The upstream sources disagree about the 512 guidance interval:
+
+- [Table 3 and the released config](https://github.com/MCG-NJU/PixNerd/blob/6da060bd4b11a4a0ac2443a31b79701090e23c23/configs_c2i/pix256std1_repa_pixnerd_xl.yaml)
+  specify a lower bound of 0.1. This remains the launcher default.
+- The [paper's ImageNet-512 paragraph](https://arxiv.org/html/2507.23268v1#S4.SS4)
+  associates FID 2.84 with CFG 3.5 over [0.3, 1.0]. To test that recipe, use
+  `BAND_LIST="0.3:1.0" CFG_LIST="3.5" STEPS=100`.
+- The sampler applies guidance strictly inside the bounds. The 0.1 recipe guides
+  steps 11 through 99 (zero-based), not step 10. No boundary convention was changed.
+- The [current release table](https://github.com/MCG-NJU/PixNerd#checkpoints)
+  lists FID 2.42 for the bundled 512 checkpoint, whereas the paper reports 2.84.
+  Neither number has been reproduced by these smoke tests.
+
+Two small execution differences are now corrected: PixNerd generation uses the
+upstream `medium` float32 matmul precision, and PNG conversion uses its half-up
+rounding. The previous precision setting is restored before FD encoders run. The
+existing finite-output check still precedes quantization. Checkpoint archives and
+launch arguments do not change.
+
+In qwen35 on A100, a full Euler-100 sample from the previous adapter exactly matched
+the official eager sampler's floating-point output with identical input noise; the
+old PNG conversion differed in only two channel values out of 786,432. The corrected
+adapter and PNG conversion match the official eager path exactly. Both 0.1 and 0.3
+intervals passed full-schedule, two-GPU generation (two 512 images each), saved under
+`baseline_outputs/pixnerd/sampling_audit-*`. A million-value conversion check passed,
+and conditional/unconditional label reversal failed an independent sampler check.
+
+The exact paper FID protocol is a separate comparison from FDr. The local FDr
+bundle's `guided_diffusion_stats.npz` mean **and** covariance were verified to be
+identical to the official ADM **ImageNet-256** reference; its mean differs from the
+ADM 512 reference. In addition, JiT uses PyTorch Inception while PixNerd reports ADM
+TensorFlow evaluation. To compare against the paper, score the saved 50,000 images
+with the [ADM evaluator and ImageNet-512 reference](https://github.com/openai/guided-diffusion/tree/main/evaluations).
+Keep the shared FDr reference bundle for FDr comparisons. The reported 3.05-to-2.84
+gap has not been attributed quantitatively to any one difference.
+
+Remaining reproduction differences: upstream Lightning compiles the model, while
+this adapter uses eager execution. Upstream also draws per-image CPU noise with
+Python-random seeds; this evaluator draws rank-seeded CUDA noise. Both use standard
+normal noise and balanced classes, but equal seed values do not produce identical
+image sets. The parity check above used matched input noise and eager execution;
+it does not establish compiled-path parity or full-dataset FID reproduction.

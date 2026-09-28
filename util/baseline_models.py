@@ -121,8 +121,14 @@ def build_generator(args, device):
             guidance_interval_min=args.interval_min, guidance_interval_max=args.interval_max)
 
         def generate(labels):
-            z = torch.randn(len(labels), 3, 512, 512, device=device)
-            return (sampler(model, z, labels, torch.full_like(labels, 1000)) + 1) / 2
+            previous_precision = torch.get_float32_matmul_precision()
+            try:
+                # Match upstream patch_bugs.py without changing FD encoder precision.
+                torch.set_float32_matmul_precision('medium')
+                z = torch.randn(len(labels), 3, 512, 512, device=device)
+                return (sampler(model, z, labels, torch.full_like(labels, 1000)) + 1) / 2
+            finally:
+                torch.set_float32_matmul_precision(previous_precision)
         return generate
 
     sys.path.insert(0, str(repo / 'src'))

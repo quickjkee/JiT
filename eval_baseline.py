@@ -102,7 +102,10 @@ def main():
                     raise RuntimeError(f'Invalid samples: shape={x.shape}, finite={torch.isfinite(x).all()}')
                 print(f'rank={rank} samples={start + len(ids)}/{len(indices)} '
                       f'range=[{x.min().item():.3f},{x.max().item():.3f}]', flush=True)
-                images = x.clamp(0, 1).mul(255).round().byte().permute(0, 2, 3, 1).cpu().numpy()
+                pixels = x.clamp(0, 1).mul(255)
+                # PixNerd's official fp2uint8 rounds half up, rather than ties to even.
+                pixels = pixels.add(0.5) if args.model == 'pixnerd' else pixels.round()
+                images = pixels.byte().permute(0, 2, 3, 1).cpu().numpy()
                 for idx, img in zip(ids, images):
                     Image.fromarray(img).save(samples / f'{idx:06d}.png')
         del generate
