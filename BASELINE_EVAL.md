@@ -62,17 +62,20 @@ CUDA_VISIBLE_DEVICES=0,1 bash run_pixnerd.sh GPUS=2 CFG_LIST="3.0 3.5" BAND_LIST
 | Launcher | Default sampler | Guidance |
 |---|---|---|
 | `run_repa.sh` | Official Euler-Maruyama SDE, 250 steps | CFG 4.0, full interval |
-| `run_pixelflow.sh` | Official cascade, 10 steps per stage × 4 stages, shift 1 | CFG 4.0, full interval only |
+| `run_pixelflow.sh` | Official Dopri5 cascade, atol 1e-6, rtol 1e-3, shift 1 | Stage-wise CFG up to 2.4, full interval only |
 | `run_pixnerd.sh` | Official Euler ODE, 100 steps | CFG 3.5, interval (0.1, 1.0) |
 | `run_rae.sh` | Official shifted Euler ODE, 50 time points | Autoguidance 1.5, full interval |
 
 These are starting recipes, not a claim of optimal FD_r^6. `STEPS` follows each official
 sampler's convention; it is not a common NFE budget. `CFG_LIST` controls RAE autoguidance
 strength. REPA intervals use its official noise-to-data time convention; PixNerd uses
-its own increasing time convention. PixelFlow rejects interval overrides.
+its own increasing time convention. PixelFlow rejects interval overrides. Its
+`PIXELFLOW_SOLVER=dopri5` default uses `STEPS=30` as requested output time points per
+stage, not the number of adaptive model evaluations. `PIXELFLOW_SOLVER=euler` uses
+`STEPS` model evaluations per stage. PixelFlow output directories include the solver name.
 
 Overrides: `PYTHON`, `GPUS`, `GEN_BSZ`, `NUM_IMAGES`, `SEED`, `CKPT`, `CONFIG`, `REPO`,
-`CFG_LIST`, `STEPS`, `BAND_LIST`, `EVAL_FDR`, `FDR_MODELS`, `FDR_BSZ`,
+`CFG_LIST`, `STEPS`, `PIXELFLOW_SOLVER` (PixelFlow only), `BAND_LIST`, `EVAL_FDR`, `FDR_MODELS`, `FDR_BSZ`,
 `FDR_STATS_DIR`, `FDR_WEIGHTS_DIR`, `OUTPUT_ROOT`, `TAG`, `SCORE_ONLY`, `DRY_RUN`.
 `CKPT` is a file except for PixelFlow, where it is a directory containing `config.yaml`
 and `model.pt`. RAE `CONFIG` replaces the full official sampling config; its relative
@@ -114,7 +117,7 @@ Environment: `/home/dbaranchuk/miniconda3/envs/qwen35/bin/python`, PyTorch
 - Strict pretrained checkpoint loading and native-resolution finite output passed for
   REPA-512, PixelFlow-256, PixNerd-512 and RAE-512.
 - Full default sampler schedules passed with two samples for REPA, PixNerd and RAE;
-  PixelFlow passed with four samples on two GPUs.
+  PixelFlow passed with four samples on two GPUs using the initial Euler demo recipe.
 - Independent review checked label ordering, CFG/autoguidance, EMA selection, latent
   scaling, time shift and decoder normalization against the official implementations.
 - RAE's `patch_size: "SHOULD BE RELOADED"` config placeholder is resolved to the exact
@@ -127,7 +130,7 @@ Smoke artifacts and logs are in `baseline_outputs/`. The six-space scoring check
 only two samples and must not be interpreted as reported model performance.
 
 Final checks: all six FDr spaces completed with finite results for all four methods.
-Two-GPU generation passed for PixelFlow (four samples, full stage schedule) and PixNerd
+Two-GPU generation passed for PixelFlow (four samples, initial Euler schedule) and PixNerd
 (16 samples, batch 8 per GPU, four steps). RAE also passed batch 8 on one A100 80 GB.
 REPA's metric calculation completed; its first shell wrapper was affected by a concurrent
 launcher edit after scoring, so the final wrapper was rerun and verified to exit cleanly.
@@ -165,7 +168,7 @@ inputs, using the names supplied below. `PYTHON=python3` uses the activated job 
 ### PixelFlow 256
 
 ```bash
-. run_pixelflow.sh PYTHON=python3 GPUS=8 ASSETS_DIR="$INPUT_PATH/pixelflow_256" CKPT="$INPUT_PATH/pixelflow_256/weights/pixelflow" BAND_LIST="0.0:1.0" CFG_LIST="4.0" EVAL_FDR=1 FDR_WEIGHTS_DIR="$INPUT_PATH/fd_encoders_v2" FDR_STATS_DIR="$INPUT_PATH/fd_encoders_stats"
+. run_pixelflow.sh PYTHON=python3 GPUS=8 ASSETS_DIR="$INPUT_PATH/pixelflow_256" CKPT="$INPUT_PATH/pixelflow_256/weights/pixelflow" BAND_LIST="0.0:1.0" CFG_LIST="2.4" PIXELFLOW_SOLVER=dopri5 STEPS=30 EVAL_FDR=1 FDR_WEIGHTS_DIR="$INPUT_PATH/fd_encoders_v2" FDR_STATS_DIR="$INPUT_PATH/fd_encoders_stats"
 ```
 
 ### PixNerd 512
@@ -209,3 +212,30 @@ Local validation of this mitigation: two A100 GPUs in qwen35 completed the same 
 RAE smoke case before and after the backend change. All four PNGs were byte-identical;
 both workers recorded separate stdout/stderr logs. The H100/UCX crash was not reproduced
 locally.
+
+## PixelFlow paper sampling recipe (2026-09-28 correction)
+
+The bundled model is XL/4: 28 blocks, width 1152, 16 attention heads, patch size 4,
+and 676,611,120 checkpoint tensor elements. The checkpoint was correct, but the initial
+launcher used the Gradio demo's Euler-10-per-stage / CFG-max-4.0 settings. Those do not
+match the paper's reported 1.98 FID recipe.
+
+[Table 3](https://arxiv.org/html/2504.07963v1#S4.T3) reports 1.98 with Dopri5,
+absolute tolerance 1e-6 and stage-wise guidance with maximum 2.4. The official pipeline
+sets relative tolerance 1e-3 and guidance to [1, 1.233333, 1.933333, 2.4] over four stages.
+The corrected launcher selects this official Dopri5 path and matches the official sampler's
+BF16 autocast and TF32 settings. The tar and weights do not need replacement.
+The upstream `sample_ddp.py` requires `--use-ode-dopri5` to select that path; its README's
+bare sampling command otherwise selects Euler.
+
+Validation in qwen35 on A100: the corrected launcher completed two samples. With the
+same seed and class label, the adapter's output exactly matched a separate official
+pipeline call using Dopri5, CFG 2.4, BF16 and TF32. A negative control using the old
+Euler-10 / CFG-4.0 recipe produced different output. Independent review checked stage
+guidance, label ordering, solver tolerances and the output-time-point convention.
+
+A paper FID comparison also requires its ADM TensorFlow evaluator on 50,000 generated
+samples. JiT's FD_r pipeline currently uses its existing PyTorch Inception implementation
+and the ADM reference statistics. Numerical equivalence of those evaluators has not been
+established. The raw `FD[inception]` is distinct from its normalized `FDr[inception]`
+and the six-space `FDr^6` average. No reproduction of FID 1.98 is claimed from smoke tests.

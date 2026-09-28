@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--num-images', type=int, default=50000)
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--steps', type=int, required=True)
+    parser.add_argument('--pixelflow-solver', choices=['euler', 'dopri5'])
     parser.add_argument('--cfg', type=float, required=True)
     parser.add_argument('--interval-min', type=float, default=0.)
     parser.add_argument('--interval-max', type=float, default=1.)
@@ -42,6 +43,10 @@ def main():
     args = parser.parse_args()
     if args.num_images < 2 or args.batch_size < 1 or args.steps < 2:
         parser.error('num-images >= 2, batch-size >= 1 and steps >= 2 are required')
+    if args.model == 'pixelflow':
+        args.pixelflow_solver = args.pixelflow_solver or 'dopri5'
+    elif args.pixelflow_solver is not None:
+        parser.error('--pixelflow-solver is supported only for PixelFlow')
     if args.config and args.model != 'rae':
         parser.error('--config is supported only for RAE')
     if args.cfg < 1 or not 0 <= args.interval_min < args.interval_max <= 1:

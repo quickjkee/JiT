@@ -63,6 +63,9 @@ def build_generator(args, device):
         return generate
 
     if args.model == 'pixelflow':
+        # Match the official sample_ddp.py precision settings.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
         from pixelflow.utils.config import instantiate_from_config
         from pixelflow.pipeline_pixelflow import PixelFlowPipeline
         from pixelflow.scheduling_pixelflow import PixelFlowScheduler
@@ -74,12 +77,17 @@ def build_generator(args, device):
         scheduler = PixelFlowScheduler(config.scheduler.num_train_timesteps,
                                        num_stages=config.scheduler.num_stages, gamma=-1/3)
         pipeline = PixelFlowPipeline(scheduler, model)
+        print(f'PixelFlow: depth={config.model.params.depth}, '
+              f'width={config.model.params.num_attention_heads * config.model.params.attention_head_dim}, '
+              f'patch_size={model.patch_size}, solver={args.pixelflow_solver}, '
+              f'cfg_max={args.cfg}', flush=True)
 
         def generate(labels):
             with torch.autocast('cuda', dtype=torch.bfloat16):
                 x = pipeline(prompt=labels.tolist(), height=256, width=256,
                     num_inference_steps=[args.steps] * config.scheduler.num_stages,
-                    guidance_scale=args.cfg, device=device, shift=1.0, use_ode_dopri5=False)
+                    guidance_scale=args.cfg, device=device, shift=1.0,
+                    use_ode_dopri5=args.pixelflow_solver == 'dopri5')
             return torch.from_numpy(x).permute(0, 3, 1, 2)
         return generate
 

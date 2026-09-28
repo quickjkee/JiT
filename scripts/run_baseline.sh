@@ -12,6 +12,7 @@ CKPT=
 CONFIG=
 REPO=
 ASSETS_DIR=external
+PIXELFLOW_SOLVER=dopri5
 FDR_BSZ=32
 FDR_MODELS=
 FDR_WEIGHTS_DIR=fd_encoders
@@ -23,7 +24,7 @@ OUTPUT_ROOT=baseline_outputs
 TAG=$(date +%Y%m%d-%H%M%S)
 case "$MODEL" in
   repa) CFG_LIST=4.0; STEPS=250; BAND_LIST=0.0:1.0 ;;
-  pixelflow) CFG_LIST=4.0; STEPS=10; BAND_LIST=0.0:1.0 ;;
+  pixelflow) CFG_LIST=2.4; STEPS=30; BAND_LIST=0.0:1.0 ;;
   pixnerd) CFG_LIST=3.5; STEPS=100; BAND_LIST=0.1:1.0 ;;
   rae) CFG_LIST=1.5; STEPS=50; BAND_LIST=0.0:1.0 ;;
   *) echo "Unknown model: $MODEL" >&2; exit 2 ;;
@@ -34,6 +35,9 @@ for arg in "$@"; do
   case "$key" in
     PYTHON|GPUS|GEN_BSZ|NUM_IMAGES|SEED|CKPT|CONFIG|REPO|ASSETS_DIR|FDR_BSZ|FDR_MODELS|FDR_WEIGHTS_DIR|FDR_STATS_DIR|EVAL_FDR|SCORE_ONLY|DRY_RUN|OUTPUT_ROOT|TAG|CFG_LIST|STEPS|BAND_LIST)
       printf -v "$key" '%s' "${arg#*=}" ;;
+    PIXELFLOW_SOLVER)
+      [[ "$MODEL" == pixelflow ]] || { echo "PIXELFLOW_SOLVER applies only to PixelFlow" >&2; exit 2; }
+      PIXELFLOW_SOLVER=${arg#*=} ;;
     *) echo "Unknown setting: $key" >&2; exit 2 ;;
   esac
 done
@@ -43,12 +47,14 @@ export OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 MKL_NUM_THREADS=8 NUMEXPR_NUM_TH
 for CFG in $CFG_LIST; do
   for BAND in $BAND_LIST; do
     OUT="$OUTPUT_ROOT/$MODEL/$TAG-cfg$CFG-band$BAND-steps$STEPS-seed$SEED"
+    [[ "$MODEL" != pixelflow ]] || OUT="$OUT-$PIXELFLOW_SOLVER"
     CMD=("$PYTHON" -m torch.distributed.run --standalone --nproc_per_node="$GPUS"
       --log-dir "$OUT/workers" --tee 3
       eval_baseline.py --model "$MODEL" --assets-dir "$ASSETS_DIR" --output-dir "$OUT"
       --batch-size "$GEN_BSZ" --num-images "$NUM_IMAGES" --steps "$STEPS"
       --cfg "$CFG" --interval-min "${BAND%:*}" --interval-max "${BAND#*:}" --seed "$SEED"
       --fdr-bsz "$FDR_BSZ" --fdr-weights-dir "$FDR_WEIGHTS_DIR" --fdr-stats-dir "$FDR_STATS_DIR")
+    [[ "$MODEL" != pixelflow ]] || CMD+=(--pixelflow-solver "$PIXELFLOW_SOLVER")
     [[ -z "$CKPT" ]] || CMD+=(--ckpt "$CKPT")
     [[ -z "$CONFIG" ]] || CMD+=(--config "$CONFIG")
     [[ -z "$REPO" ]] || CMD+=(--repo "$REPO")
